@@ -80,8 +80,7 @@ async fn tab_fragment<S: XSource + 'static, I: ImageSource + 'static>(
         Err(PrepareError::UnknownTab) => return text(StatusCode::NOT_FOUND, "not found"),
     };
     let cache = cache_control(state.store.config().cache_max_age_secs);
-    let base = state.store.config().base_path.clone();
-    let body = render_fragment(&base, &view);
+    let body = render_fragment(state.store.config(), &view);
     serve(&body, HTML, &headers, &cache, true)
 }
 

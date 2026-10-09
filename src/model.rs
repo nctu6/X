@@ -1,7 +1,7 @@
 //! Posts, media, and the small amount of time math the renderer needs.
 //!
-//! X sends `created_at` as UTC timestamps. Parsing and formatting them here
-//! keeps a datetime crate out of the binary.
+//! X sends `created_at` as UTC timestamps. RFC 3339 parsing and formatting
+//! stay hand-rolled; display times use chrono-tz for the configured zone.
 
 use serde::{Deserialize, Serialize};
 
@@ -179,9 +179,24 @@ pub fn format_rfc3339(secs: i64) -> String {
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
 }
 
-pub fn format_display(secs: i64) -> String {
-    let rfc = format_rfc3339(secs);
-    format!("{} {} UTC", &rfc[..10], &rfc[11..16])
+/// The zone used for displayed times, and the text shown after them.
+#[derive(Debug, Clone, Copy)]
+pub struct DisplayZone<'a> {
+    pub tz: chrono_tz::Tz,
+    /// Replaces the `UTC+08:00` offset text when set, e.g. `Taiwan`.
+    pub label: Option<&'a str>,
+}
+
+/// Wall-clock time in the zone for display, e.g. `2026-10-09 10:46 Taiwan`,
+/// or `2026-10-09 10:46 UTC+08:00` when no label is set.
+pub fn format_local(secs: i64, zone: DisplayZone<'_>) -> String {
+    use chrono::{DateTime, Utc};
+    let utc = DateTime::<Utc>::from_timestamp(secs.max(0), 0).unwrap_or_default();
+    let local = utc.with_timezone(&zone.tz);
+    match zone.label {
+        Some(label) => format!("{} {label}", local.format("%Y-%m-%d %H:%M")),
+        None => local.format("%Y-%m-%d %H:%M UTC%:z").to_string(),
+    }
 }
 
 fn month_len(year: i32, month: u32) -> u32 {
@@ -248,7 +263,30 @@ mod tests {
             Some(1_700_000_000)
         );
         assert_eq!(format_rfc3339(1_700_000_000), "2023-11-14T22:13:20Z");
-        assert_eq!(format_display(1_700_000_000), "2023-11-14 22:13 UTC");
+        let taipei = DisplayZone {
+            tz: chrono_tz::Asia::Taipei,
+            label: None,
+        };
+        let utc = DisplayZone {
+            tz: chrono_tz::UTC,
+            label: None,
+        };
+        let taiwan = DisplayZone {
+            tz: chrono_tz::Asia::Taipei,
+            label: Some("Taiwan"),
+        };
+        assert_eq!(
+            format_local(1_700_000_000, taipei),
+            "2023-11-15 06:13 UTC+08:00"
+        );
+        assert_eq!(
+            format_local(1_700_000_000, utc),
+            "2023-11-14 22:13 UTC+00:00"
+        );
+        assert_eq!(
+            format_local(1_791_512_912, taiwan),
+            "2026-10-09 10:28 Taiwan"
+        );
     }
 
     #[test]

@@ -13,7 +13,7 @@ use serde::Serialize;
 use crate::config::Config;
 use crate::images::display_src;
 use crate::model::{
-    format_display, format_rfc3339, profile_url, status_url, MediaJson, Post, PostJson,
+    format_local, format_rfc3339, profile_url, status_url, DisplayZone, MediaJson, Post, PostJson,
 };
 use crate::store::TabView;
 
@@ -39,8 +39,8 @@ pub fn render_page(config: &Config, view: &TabView) -> Encoded {
     encode_body(page_html(config, view).into_bytes())
 }
 
-pub fn render_fragment(base: &str, view: &TabView) -> Encoded {
-    encode_body(fragment_html(base, view).into_bytes())
+pub fn render_fragment(config: &Config, view: &TabView) -> Encoded {
+    encode_body(fragment_html(&config.base_path, config.display_zone(), view).into_bytes())
 }
 
 pub fn render_tab_json(base: &str, view: &TabView) -> Encoded {
@@ -135,7 +135,7 @@ fn page_html(config: &Config, view: &TabView) -> String {
     match view.updated_at {
         Some(stamp) => {
             html.push_str("Updated ");
-            push_esc(&mut html, &format_display(stamp));
+            push_time(&mut html, stamp, config.display_zone());
         }
         None => html.push_str("Not updated yet"),
     }
@@ -161,7 +161,11 @@ fn page_html(config: &Config, view: &TabView) -> String {
         }
         html.push('>');
         if tab.id == view.id {
-            html.push_str(&fragment_html(&config.base_path, view));
+            html.push_str(&fragment_html(
+                &config.base_path,
+                config.display_zone(),
+                view,
+            ));
         } else {
             html.push_str("<p class=\"empty\">Open this tab to load posts.</p>");
         }
@@ -180,7 +184,16 @@ fn page_html(config: &Config, view: &TabView) -> String {
     html
 }
 
-fn fragment_html(base: &str, view: &TabView) -> String {
+/// `<time datetime="UTC ISO">local wall clock</time>`.
+fn push_time(html: &mut String, secs: i64, zone: DisplayZone<'_>) {
+    html.push_str("<time datetime=\"");
+    html.push_str(&format_rfc3339(secs));
+    html.push_str("\">");
+    push_esc(html, &format_local(secs, zone));
+    html.push_str("</time>");
+}
+
+fn fragment_html(base: &str, zone: DisplayZone<'_>, view: &TabView) -> String {
     let mut html = String::with_capacity(256 + view.posts.len() * 480);
     if let Some(message) = &view.message {
         html.push_str("<p class=\"banner\" role=\"status\">");
@@ -189,19 +202,19 @@ fn fragment_html(base: &str, view: &TabView) -> String {
     }
     if let Some(stamp) = view.updated_at {
         html.push_str("<p class=\"meta\">Updated ");
-        push_esc(&mut html, &format_display(stamp));
+        push_time(&mut html, stamp, zone);
         html.push_str("</p>");
     }
     if view.posts.is_empty() {
         html.push_str("<p class=\"empty\">No recent posts.</p>");
     }
     for post in &view.posts {
-        push_post(&mut html, post, base);
+        push_post(&mut html, post, base, zone);
     }
     html
 }
 
-fn push_post(html: &mut String, post: &Post, base: &str) {
+fn push_post(html: &mut String, post: &Post, base: &str, zone: DisplayZone<'_>) {
     html.push_str("<article><div class=\"by\">");
     if let Some(avatar) = &post.avatar {
         html.push_str("<img class=\"avatar\" alt=\"\" width=\"36\" height=\"36\" src=\"");
@@ -226,11 +239,9 @@ fn push_post(html: &mut String, post: &Post, base: &str) {
     let permalink = status_url(&post.username, &post.id);
     html.push_str("<a class=\"when\" href=\"");
     push_esc(html, &permalink);
-    html.push_str("\" target=\"_blank\" rel=\"noopener noreferrer\"><time datetime=\"");
-    html.push_str(&format_rfc3339(post.created_at));
-    html.push_str("\">");
-    push_esc(html, &format_display(post.created_at));
-    html.push_str("</time></a></div>");
+    html.push_str("\" target=\"_blank\" rel=\"noopener noreferrer\">");
+    push_time(html, post.created_at, zone);
+    html.push_str("</a></div>");
     if !post.text.is_empty() {
         html.push_str("<p class=\"text\">");
         push_linked(html, &post.text, &post.entities);
@@ -526,7 +537,12 @@ mod tests {
         assert!(html.contains("https://x.com/alice"));
         assert!(html.contains("https://x.com/hashtag/Rust"));
         assert!(html.contains("https://x.com/example/status/100"));
-        assert!(html.contains("2024-05-01 12:34 UTC"));
+        assert!(html
+            .contains("<time datetime=\"2024-05-01T12:34:56Z\">2024-05-01 20:34 UTC+08:00</time>"));
+        assert!(html.contains(
+            "Updated <time datetime=\"2023-11-14T22:13:20Z\">2023-11-15 06:13 UTC+08:00</time>"
+        ));
+        assert!(!html.contains("12:34 UTC"));
         assert!(html.contains("/x/media/example/3_1.jpg"));
         assert!(html.contains("loading=\"lazy\" decoding=\"async\""));
         assert!(!html.contains("https://pbs.twimg.com/media/abc.jpg"));
@@ -548,8 +564,23 @@ mod tests {
         assert!(!html.contains("from github"));
         assert!(!html.contains("super-secret-token-value"));
 
-        let fragment = render_fragment("/x", &view);
+        let fragment = render_fragment(&config, &view);
         let fragment_html = String::from_utf8(fragment.raw.to_vec()).unwrap();
+        assert!(fragment_html.contains("2024-05-01 20:34 UTC+08:00"));
+        assert!(fragment_html.contains("2023-11-15 06:13 UTC+08:00"));
+
+        let labeled = Config {
+            timezone_label: Some("Taiwan".into()),
+            ..config.clone()
+        };
+        let labeled_html =
+            String::from_utf8(render_fragment(&labeled, &view).raw.to_vec()).unwrap();
+        assert!(labeled_html
+            .contains("<time datetime=\"2024-05-01T12:34:56Z\">2024-05-01 20:34 Taiwan</time>"));
+        assert!(labeled_html.contains(
+            "Updated <time datetime=\"2023-11-14T22:13:20Z\">2023-11-15 06:13 Taiwan</time>"
+        ));
+        assert!(!labeled_html.contains("UTC+08:00"));
         assert!(fragment_html.contains("Showing saved posts."));
         assert!(fragment_html.contains("https://x.com/example/status/100"));
         assert!(!fragment_html.contains("<html"));

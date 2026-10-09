@@ -2,3 +2,5 @@
 /data
 **/*.rs.bk
 .DS_Store
+.venv/
+config.yml
