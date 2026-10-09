@@ -1,4 +1,5 @@
 # Example configuration for the X wire service.
+# Copy to config.yml (git-ignored) and edit it: cp config.example.yml config.yml
 # Replace x_bearer_token before use. A non-empty X_BEARER_TOKEN overrides it.
 # The process never logs the token.
 
@@ -6,11 +7,11 @@
 x_bearer_token: "your-bearer-token-here"
 
 # Bind address. Use 0.0.0.0 so a container or reverse proxy can reach it.
-listen: "0.0.0.0:8080"
+listen: "0.0.0.0:8181"
 
-# Public URL prefix. Pages, tab fragments, and JSON live under this path
-# so the service can sit behind nginx at https://0x6.ai/x
-base_path: "/x"
+# Public URL prefix. "/" (or empty) serves the site at the domain root,
+# e.g. https://x.0x6.ai/. Use a prefix such as "/x" to mount it under a path.
+base_path: "/"
 
 # Browser cache lifetime. 0 sends `private, no-cache` so a new six-hour
 # slot is noticed. Responses still include an ETag.
@@ -39,6 +40,10 @@ data_dir: "data"
 # A day is 00–06, 06–12, 12–18, and 18–24. Each account is fetched at most
 # once per slot, and only when its tab is opened.
 timezone: "Asia/Taipei"
+
+# Text shown after displayed times, e.g. "2026-10-09 10:46 Taiwan".
+# Leave unset to show the UTC offset ("UTC+08:00") instead.
+timezone_label: "Taiwan"
 
 tabs:
   - label: News

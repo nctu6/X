@@ -2,17 +2,41 @@
 
 A small Rust service that shows recent posts from X, one tab per group of accounts. Posts are stored as JSONL and served from memory. The X API is called only when someone opens a tab, and at most once per account in each six-hour slot.
 
-The public site is meant to sit at `http://0x6.ai/x`.
+The public site runs at the domain root, `https://x.0x6.ai/`.
 
 ## Run
 
+`config.yml` holds the bearer token, so it is git-ignored. Start from the example:
+
 ```bash
+cp config.example.yml config.yml
 # Edit config.yml and replace x_bearer_token, or export an override.
 export X_BEARER_TOKEN='...'   # optional; wins over config.yml when non-empty
 cargo run --release -- config.yml
 ```
 
-Open `http://127.0.0.1:8080/x/`. The first tab loads with that request. Other tabs load when you open them.
+Open `http://127.0.0.1:8181/`. The first tab loads with that request. Other tabs load when you open them.
+
+### Toolchain in `.venv`
+
+The Rust toolchain lives inside the project, not in `~/.cargo` (`.venv/` is git-ignored):
+
+```bash
+export RUSTUP_HOME="$PWD/.venv/rustup" CARGO_HOME="$PWD/.venv/cargo"
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal --default-toolchain stable
+export PATH="$CARGO_HOME/bin:$PATH"
+```
+
+### Production: `scripts/run.sh` in tmux
+
+`scripts/run.sh` sets `RUSTUP_HOME`, `CARGO_HOME`, and `PATH` to the `.venv` toolchain, builds the release binary if sources changed, and runs `target/release/xfeed config.yml`. It exits with a hint if `config.yml` is missing. Run it in the tmux session `X`:
+
+```bash
+tmux new-session -d -s X /root/workspace/X/scripts/run.sh     # new session
+tmux new-window -d -t X: -n xfeed /root/workspace/X/scripts/run.sh   # or a window in an existing session
+```
+
+To restart after pulling changes, press Ctrl-C in that window and run `scripts/run.sh` again (or `tmux respawn-pane -k -t X:xfeed /root/workspace/X/scripts/run.sh`).
 
 `cargo run --release` builds a single binary, `target/release/xfeed`. The runtime inputs are the config file, the data directory it names, and optionally `X_BEARER_TOKEN`.
 
@@ -45,8 +69,8 @@ If `X_BEARER_TOKEN` is set and not blank, it overrides the file. A blank or unse
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `x_bearer_token` | empty | App-only bearer token. One line, no spaces. |
-| `listen` | `0.0.0.0:8080` | Bind address. |
-| `base_path` | empty | Public prefix. Use `/x` behind the reverse proxy. |
+| `listen` | `0.0.0.0:8080` | Bind address. The example uses `0.0.0.0:8181`. |
+| `base_path` | empty (root) | Public prefix. `/` or empty serves at the domain root (the example uses `/`). Use e.g. `/x` to mount under a path. |
 | `cache_max_age_secs` | `0` | `0` sends `Cache-Control: private, no-cache`. Otherwise `private, max-age`. |
 | `posts_per_tab` | `20` | Posts shown after merging that tab's accounts (1–100). |
 | `max_stored_posts` | `400` | Posts kept in each account file (1–5000, at least `posts_per_tab`). |
@@ -55,7 +79,8 @@ If `X_BEARER_TOKEN` is set and not blank, it overrides the file. A blank or unse
 | `exclude_retweets` | `true` | Drop reposts. |
 | `api_base` | `https://api.x.com` | API origin. `http://` is allowed only for localhost. |
 | `data_dir` | `data` | Directory of `{handle}.jsonl` and `{handle}.state.json`. |
-| `timezone` | `Asia/Taipei` | IANA zone for the four daily slots. |
+| `timezone` | `Asia/Taipei` | IANA zone for the four daily slots and for displayed times. |
+| `timezone_label` | unset | Text after displayed times, e.g. `Taiwan` gives `2026-10-09 10:46 Taiwan`. Unset shows the offset (`UTC+08:00`). The `<time datetime>` attribute and JSON stay UTC. |
 | `tabs` | required | Each tab has a `label` and a list of usernames. |
 
 Usernames may include a leading `@`. Labels become ids (`News` → `news`). A label that does not yield an ASCII slug becomes `tab-1`, `tab-2`, and so on.
@@ -83,16 +108,15 @@ xfeed prune                 # delete files under data/media that no post referen
 
 ## Endpoints
 
-With `base_path: /x`:
+With `base_path: /` (the default). With a prefix such as `/x`, every path below gains it, and `/x` redirects to `/x/`:
 
 | Method | Path | Body |
 | --- | --- | --- |
-| GET | `/x/` | HTML for the first tab. This request may refresh that tab's accounts. |
-| GET | `/x` | Redirects to `/x/`. |
-| GET | `/x/tab/news` | HTML fragment for that tab. Opening a tab fetches this. |
-| GET | `/x/api/news` | JSON for that tab. `/x/api/news.json` is the same. This also counts as opening the tab. |
-| GET | `/x/media/bbcworld/3_1.jpg` | A saved image. Long-lived immutable cache. Does not call X. |
-| GET | `/x/health` | `{"ok":true,"timezone":"Asia/Taipei","data_dir":"data"}`. Does not call X. |
+| GET | `/` | HTML for the first tab. This request may refresh that tab's accounts. |
+| GET | `/tab/news` | HTML fragment for that tab. Opening a tab fetches this. |
+| GET | `/api/news` | JSON for that tab. `/api/news.json` is the same. This also counts as opening the tab. |
+| GET | `/media/bbcworld/3_1.jpg` | A saved image. Long-lived immutable cache. Does not call X. |
+| GET | `/health` | `{"ok":true,"timezone":"Asia/Taipei","data_dir":"data"}`. Does not call X. |
 
 HTML and JSON are gzipped or brotlied when that is smaller. Responses send `ETag` and `Vary: Accept-Encoding`. A matching `If-None-Match` returns `304` after the slot check, so a conditional request can still refresh a new slot. Health is `Cache-Control: no-store`.
 
@@ -100,7 +124,7 @@ Post text is HTML-escaped. Links, mentions, hashtags, and cashtags become anchor
 
 ## Deploy behind nginx at `/x`
 
-Run the binary on `127.0.0.1:8080` with `base_path: /x` (the example config already does). Forward `Accept-Encoding` and do not recompress, so the precompressed body is what the browser gets. `/x/tab/` and `/x/api/` use the same prefix.
+The live site uses a Cloudflare tunnel that forwards `x.0x6.ai` to `localhost:8181` with `base_path: /`, so no nginx is needed. To mount it under `/x` instead, run the binary on `127.0.0.1:8080` with `base_path: /x`. Forward `Accept-Encoding` and do not recompress, so the precompressed body is what the browser gets. `/x/tab/` and `/x/api/` use the same prefix.
 
 ```nginx
 location = /x {
@@ -132,14 +156,14 @@ Point a probe at `http://127.0.0.1:8080/x/health`. It stays `200` while the proc
 
 ```bash
 docker build -t xfeed .
-docker run --rm -p 8080:8080 \
+docker run --rm -p 8181:8181 \
   -e X_BEARER_TOKEN \
   -v "$PWD/config.yml:/etc/xfeed/config.yml:ro" \
   -v xfeed-data:/var/lib/xfeed \
   xfeed
 ```
 
-The image listens on `0.0.0.0:8080`, reads `/etc/xfeed/config.yml`, and writes JSONL under `/var/lib/xfeed` (the example `data_dir: data` is relative to that workdir). Mount a config that contains `x_bearer_token`, or set `X_BEARER_TOKEN` to override the file. The image ships the placeholder config, which will not authenticate until you replace it.
+The image listens on `0.0.0.0:8181` (from `config.example.yml`), reads `/etc/xfeed/config.yml`, and writes JSONL under `/var/lib/xfeed` (the example `data_dir: data` is relative to that workdir). Mount a config that contains `x_bearer_token`, or set `X_BEARER_TOKEN` to override the file. The image ships `config.example.yml` with the placeholder token, which will not authenticate until you replace it.
 
 `docker run --rm ... xfeed update --tab News` refreshes that tab inside the container.
 
@@ -151,7 +175,7 @@ cargo clippy --all-targets -- -D warnings
 cargo build --release
 ```
 
-Tests parse `config.yml`, check slot boundaries, merge and dedupe JSONL, render HTML from mocked X JSON, and exercise single-flight fetches and HTTP with an in-process fake. They do not call the live API and do not need a real token.
+Tests parse `config.example.yml` (never the real `config.yml`), check slot boundaries, merge and dedupe JSONL, render HTML from mocked X JSON, and exercise single-flight fetches and HTTP with an in-process fake. They do not call the live API and do not need a real token.
 
 ## Layout
 

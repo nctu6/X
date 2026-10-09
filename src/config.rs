@@ -24,6 +24,8 @@ pub struct Config {
     pub api_base: String,
     pub data_dir: String,
     pub timezone: String,
+    /// Shown after display times instead of the UTC offset, e.g. `Taiwan`.
+    pub timezone_label: Option<String>,
     /// Token from the file. Not the env override. Redacted in `Debug`.
     pub x_bearer_token: String,
     pub tabs: Vec<Tab>,
@@ -43,6 +45,7 @@ impl std::fmt::Debug for Config {
             .field("api_base", &self.api_base)
             .field("data_dir", &self.data_dir)
             .field("timezone", &self.timezone)
+            .field("timezone_label", &self.timezone_label)
             .field("x_bearer_token", &"<redacted>")
             .field("tabs", &self.tabs)
             .finish()
@@ -95,6 +98,20 @@ impl Config {
         crate::config::resolve_bearer_token(&self.x_bearer_token, from_env)
     }
 
+    /// The configured IANA zone. `timezone` is validated on load, so the UTC
+    /// fallback only applies to a hand-built `Config`.
+    pub fn tz(&self) -> chrono_tz::Tz {
+        self.timezone.parse().unwrap_or(chrono_tz::UTC)
+    }
+
+    /// Zone and optional label used for every time shown on a page.
+    pub fn display_zone(&self) -> crate::model::DisplayZone<'_> {
+        crate::model::DisplayZone {
+            tz: self.tz(),
+            label: self.timezone_label.as_deref(),
+        }
+    }
+
     /// Account handles in first-seen order, without case-insensitive duplicates.
     pub fn handles(&self) -> Vec<&str> {
         let mut seen = HashSet::new();
@@ -135,6 +152,8 @@ struct RawConfig {
     data_dir: String,
     #[serde(default = "default_timezone")]
     timezone: String,
+    #[serde(default)]
+    timezone_label: Option<String>,
     #[serde(default)]
     x_bearer_token: String,
     tabs: Vec<RawTab>,
@@ -228,6 +247,15 @@ impl RawConfig {
                 "config: timezone \"{timezone}\" is not an IANA time zone"
             )));
         }
+        let timezone_label = match self.timezone_label.as_deref().map(str::trim) {
+            None | Some("") => None,
+            Some(label) if label.chars().count() > 32 || label.chars().any(char::is_control) => {
+                return Err(ConfigError::new(
+                    "config: timezone_label must be at most 32 printable characters",
+                ));
+            }
+            Some(label) => Some(label.to_string()),
+        };
         if self.tabs.is_empty() {
             return Err(ConfigError::new("config: at least one tab is required"));
         }
@@ -311,6 +339,7 @@ impl RawConfig {
             api_base: normalize_api(&self.api_base)?,
             data_dir,
             timezone,
+            timezone_label,
             x_bearer_token,
             tabs,
         })
@@ -465,10 +494,11 @@ mod tests {
 
     #[test]
     fn example_config_parses() {
-        let config = Config::from_yaml(include_str!("../config.yml")).unwrap();
-        assert_eq!(config.listen, "0.0.0.0:8080");
-        assert_eq!(config.base_path, "/x");
+        let config = Config::from_yaml(include_str!("../config.example.yml")).unwrap();
+        assert_eq!(config.listen, "0.0.0.0:8181");
+        assert_eq!(config.base_path, "");
         assert_eq!(config.timezone, "Asia/Taipei");
+        assert_eq!(config.timezone_label.as_deref(), Some("Taiwan"));
         assert_eq!(config.data_dir, "data");
         assert_eq!(config.posts_per_tab, 20);
         assert_eq!(config.max_image_bytes, 8_000_000);
@@ -488,7 +518,7 @@ mod tests {
         );
         assert!(
             config.x_bearer_token == "your-bearer-token-here",
-            "committed config.yml should keep the placeholder token"
+            "config.example.yml should keep the placeholder token"
         );
         let shown = format!("{config:?}");
         assert!(!shown.contains("your-bearer-token-here"));
@@ -573,5 +603,19 @@ mod tests {
         for case in cases {
             assert!(Config::from_yaml(case).is_err(), "{case}");
         }
+    }
+
+    #[test]
+    fn timezone_label_is_optional_and_checked() {
+        let base = "tabs:\n  - label: A\n    accounts: [abc]\n";
+        let unset = Config::from_yaml(base).unwrap();
+        assert_eq!(unset.timezone_label, None);
+        let blank = Config::from_yaml(&format!("timezone_label: \"  \"\n{base}")).unwrap();
+        assert_eq!(blank.timezone_label, None);
+        let set = Config::from_yaml(&format!("timezone_label: \" Taiwan \"\n{base}")).unwrap();
+        assert_eq!(set.timezone_label.as_deref(), Some("Taiwan"));
+        assert!(
+            Config::from_yaml(&format!("timezone_label: \"{}\"\n{base}", "x".repeat(33))).is_err()
+        );
     }
 }
