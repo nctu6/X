@@ -1,0 +1,55 @@
+# Example configuration for the X wire service.
+# Replace x_bearer_token before use. A non-empty X_BEARER_TOKEN overrides it.
+# The process never logs the token.
+
+# App-only bearer token from the X developer portal (placeholder below).
+x_bearer_token: "your-bearer-token-here"
+
+# Bind address. Use 0.0.0.0 so a container or reverse proxy can reach it.
+listen: "0.0.0.0:8080"
+
+# Public URL prefix. Pages, tab fragments, and JSON live under this path
+# so the service can sit behind nginx at https://0x6.ai/x
+base_path: "/x"
+
+# Browser cache lifetime. 0 sends `private, no-cache` so a new six-hour
+# slot is noticed. Responses still include an ETag.
+cache_max_age_secs: 0
+
+# Newest posts shown on a tab after merging that tab's accounts (1–100).
+posts_per_tab: 20
+
+# Posts kept in each account's JSONL file (1–5000, at least posts_per_tab).
+max_stored_posts: 400
+
+# Largest image saved locally. 0 keeps the remote URL and skips downloads.
+max_image_bytes: 8000000
+
+# Original posts only. Set either to false to show replies or reposts.
+exclude_replies: true
+exclude_retweets: true
+
+# App-only X API v2 origin. Override with http://127.0.0.1:PORT for tests.
+api_base: "https://api.x.com"
+
+# One JSONL file and one state file per account live here.
+data_dir: "data"
+
+# Slot boundaries use this IANA time zone.
+# A day is 00–06, 06–12, 12–18, and 18–24. Each account is fetched at most
+# once per slot, and only when its tab is opened.
+timezone: "Asia/Taipei"
+
+tabs:
+  - label: News
+    accounts:
+      - BBCWorld
+      - Reuters
+  - label: Tech
+    accounts:
+      - github
+      - rustlang
+  - label: Space
+    accounts:
+      - NASA
+      - SpaceX
