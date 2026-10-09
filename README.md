@@ -27,16 +27,15 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-mod
 export PATH="$CARGO_HOME/bin:$PATH"
 ```
 
-### Production: `scripts/run.sh` in tmux
+### Production: `scripts/run.sh`
 
-`scripts/run.sh` sets `RUSTUP_HOME`, `CARGO_HOME`, and `PATH` to the `.venv` toolchain, builds the release binary if sources changed, and runs `target/release/xfeed config.yml`. It exits with a hint if `config.yml` is missing. Run it in the tmux session `X`:
+`scripts/run.sh` sets `RUSTUP_HOME`, `CARGO_HOME`, and `PATH` to the `.venv` toolchain, builds the release binary if sources changed, and runs `target/release/xfeed config.yml` in the foreground. It exits with a hint if `config.yml` is missing.
 
 ```bash
-tmux new-session -d -s X /root/workspace/X/scripts/run.sh     # new session
-tmux new-window -d -t X: -n xfeed /root/workspace/X/scripts/run.sh   # or a window in an existing session
+scripts/run.sh
 ```
 
-To restart after pulling changes, press Ctrl-C in that window and run `scripts/run.sh` again (or `tmux respawn-pane -k -t X:xfeed /root/workspace/X/scripts/run.sh`).
+Run it under your process manager of choice to keep it up. To pick up changes, stop it and start `scripts/run.sh` again.
 
 `cargo run --release` builds a single binary, `target/release/xfeed`. The runtime inputs are the config file, the data directory it names, and optionally `X_BEARER_TOKEN`.
 
@@ -180,3 +179,7 @@ Tests parse `config.example.yml` (never the real `config.yml`), check slot bound
 ## Layout
 
 `xfeed` is one crate. `main` serves HTTP or runs `update`. `store` owns the JSONL files, the in-memory posts, and the once-per-slot gate. `images` downloads media and serves the prune walk. `slot` maps a timestamp onto the four local windows. `render` builds the home page, a tab fragment, JSON, gzip, and brotli. `http` selects the encoding, compares the ETag after the slot check, and serves saved images. `xapi` calls the X API v2 and parses posts.
+
+## License
+
+MIT. Copyright © 0x6.ai. See [LICENSE](LICENSE).
