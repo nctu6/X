@@ -81,6 +81,7 @@ If `X_BEARER_TOKEN` is set and not blank, it overrides the file. A blank or unse
 | `timezone` | `Asia/Taipei` | IANA zone for the four daily slots and for displayed times. |
 | `timezone_label` | unset | Text after displayed times, e.g. `Taiwan` gives `2026-10-09 10:46 Taiwan`. Unset shows the offset (`UTC+08:00`). The `<time datetime>` attribute and JSON stay UTC. |
 | `tabs` | required | Each tab has a `label` and a list of usernames. |
+| `footer` | unset | Optional credits in the page footer: `text` (linked to `url` when set), `links`, a list of `{ label, url }`, and `note`, a plain-text line such as a disclaimer (at most 300 characters). URLs must be `http://` or `https://`. Links open in a new tab. See `config.example.yml`. |
 
 Usernames may include a leading `@`. Labels become ids (`News` → `news`). A label that does not yield an ASCII slug becomes `tab-1`, `tab-2`, and so on.
 

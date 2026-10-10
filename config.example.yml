@@ -58,3 +58,16 @@ tabs:
     accounts:
       - NASA
       - SpaceX
+
+# Optional credits in the page footer. Every URL must be http:// or https://.
+# Remove the block to show no credits.
+footer:
+  text: "© 0x6.ai"          # linked to url when url is set
+  url: "https://0x6.ai/"
+  links:
+    - { label: "About", url: "https://0x6.ai/about.html" }
+    - { label: "Terms", url: "https://0x6.ai/terms.html" }
+    - { label: "Privacy", url: "https://0x6.ai/privacy.html" }
+    - { label: "License", url: "https://github.com/nctu6/X/blob/main/LICENSE" }
+  # Plain-text line under the links, e.g. a disclaimer (max 300 characters).
+  note: "Rights in posts, images, and account names belong to their authors and X, and do not reflect the views of 0x6.ai. Content is updated with a delay, so rely on the original post on X."

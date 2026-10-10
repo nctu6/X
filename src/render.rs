@@ -10,7 +10,7 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use serde::Serialize;
 
-use crate::config::Config;
+use crate::config::{Config, Footer};
 use crate::images::display_src;
 use crate::model::{
     format_local, format_rfc3339, profile_url, status_url, DisplayZone, MediaJson, Post, PostJson,
@@ -171,7 +171,11 @@ fn page_html(config: &Config, view: &TabView) -> String {
         }
         html.push_str("</section>");
     }
-    html.push_str("</main><footer><a href=\"");
+    html.push_str("</main><footer>");
+    if let Some(footer) = &config.footer {
+        push_footer(&mut html, footer);
+    }
+    html.push_str("<a href=\"");
     let health = if config.base_path.is_empty() {
         "/health".to_string()
     } else {
@@ -182,6 +186,47 @@ fn page_html(config: &Config, view: &TabView) -> String {
     html.push_str(SCRIPT);
     html.push_str("</script></body></html>");
     html
+}
+
+/// Site credits: `<p class="credits">` with the linked text and each link,
+/// then `<p class="note">` with the plain-text note.
+fn push_footer(html: &mut String, footer: &Footer) {
+    if footer.text.is_some() || !footer.links.is_empty() {
+        push_credits(html, footer);
+    }
+    if let Some(note) = &footer.note {
+        html.push_str("<p class=\"note\">");
+        push_esc(html, note);
+        html.push_str("</p>");
+    }
+}
+
+fn push_credits(html: &mut String, footer: &Footer) {
+    html.push_str("<p class=\"credits\">");
+    let mut first = true;
+    if let Some(text) = &footer.text {
+        match &footer.url {
+            Some(url) => push_ext_link(html, url, text),
+            None => push_esc(html, text),
+        }
+        first = false;
+    }
+    for link in &footer.links {
+        if !first {
+            html.push_str(" · ");
+        }
+        push_ext_link(html, &link.url, &link.label);
+        first = false;
+    }
+    html.push_str("</p>");
+}
+
+fn push_ext_link(html: &mut String, url: &str, label: &str) {
+    html.push_str("<a href=\"");
+    push_esc(html, url);
+    html.push_str("\" target=\"_blank\" rel=\"noopener noreferrer\">");
+    push_esc(html, label);
+    html.push_str("</a>");
 }
 
 /// `<time datetime="UTC ISO">local wall clock</time>`.
@@ -433,7 +478,7 @@ article{padding:.95rem 0;border-bottom:1px solid var(--line)}\
 .media{display:grid;gap:.4rem;margin-top:.6rem}.media.multi{grid-template-columns:1fr 1fr}\
 .media img{width:100%;height:auto;max-height:280px;object-fit:cover;border-radius:6px;background:var(--line)}\
 .empty{color:var(--muted)}footer{margin-top:1.2rem;color:var(--muted);font-size:.8rem}\
-footer a{color:var(--muted)}a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}\
+footer a{color:var(--muted)}footer .credits,footer .note{margin:0 0 .35rem}a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}\
 ::selection{background:#f0c2b0;color:#1c1915}\
 ";
 
@@ -563,6 +608,7 @@ mod tests {
         assert!(html.contains("/tab/"));
         assert!(!html.contains("from github"));
         assert!(!html.contains("super-secret-token-value"));
+        assert!(!html.contains("class=\"credits\""));
 
         let fragment = render_fragment(&config, &view);
         let fragment_html = String::from_utf8(fragment.raw.to_vec()).unwrap();
@@ -639,5 +685,44 @@ mod tests {
         assert_eq!(health["ok"], true);
         assert_eq!(health["timezone"], "Asia/Taipei");
         assert_eq!(health["data_dir"], "data");
+    }
+
+    #[test]
+    fn footer_credits_are_escaped_links() {
+        let config = Config::from_yaml(
+            "x_bearer_token: \"super-secret-token-value\"\nfooter:\n  text: \"© A<b>\"\n  url: \"https://example.com/?a=1&b=2\"\n  links:\n    - { label: About, url: \"https://example.com/about.html\" }\n    - { label: \"T&C\", url: \"http://example.com/terms\" }\n  note: \"Rights <b>belong</b> to authors & X.\"\ntabs:\n  - label: News\n    accounts: [example]\n",
+        )
+        .unwrap();
+        let view = TabView {
+            id: "news".into(),
+            label: "News".into(),
+            posts: Vec::new(),
+            updated_at: None,
+            message: None,
+        };
+        let html = String::from_utf8(render_page(&config, &view).raw.to_vec()).unwrap();
+        assert!(html.contains(
+            "<footer><p class=\"credits\"><a href=\"https://example.com/?a=1&amp;b=2\" target=\"_blank\" rel=\"noopener noreferrer\">© A&lt;b&gt;</a> · <a href=\"https://example.com/about.html\" target=\"_blank\" rel=\"noopener noreferrer\">About</a> · <a href=\"http://example.com/terms\" target=\"_blank\" rel=\"noopener noreferrer\">T&amp;C</a></p><p class=\"note\">Rights &lt;b&gt;belong&lt;/b&gt; to authors &amp; X.</p><a href=\"/health\">health</a></footer>"
+        ));
+    }
+
+    #[test]
+    fn footer_note_alone_skips_credits() {
+        let config = Config::from_yaml(
+            "footer:\n  note: \"Content is delayed.\"\ntabs:\n  - label: News\n    accounts: [example]\n",
+        )
+        .unwrap();
+        let view = TabView {
+            id: "news".into(),
+            label: "News".into(),
+            posts: Vec::new(),
+            updated_at: None,
+            message: None,
+        };
+        let html = String::from_utf8(render_page(&config, &view).raw.to_vec()).unwrap();
+        assert!(html.contains(
+            "<footer><p class=\"note\">Content is delayed.</p><a href=\"/health\">health</a></footer>"
+        ));
+        assert!(!html.contains("class=\"credits\""));
     }
 }
