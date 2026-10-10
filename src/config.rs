@@ -29,6 +29,8 @@ pub struct Config {
     /// Token from the file. Not the env override. Redacted in `Debug`.
     pub x_bearer_token: String,
     pub tabs: Vec<Tab>,
+    /// Optional site credits shown in the page footer.
+    pub footer: Option<Footer>,
 }
 
 impl std::fmt::Debug for Config {
@@ -48,8 +50,25 @@ impl std::fmt::Debug for Config {
             .field("timezone_label", &self.timezone_label)
             .field("x_bearer_token", &"<redacted>")
             .field("tabs", &self.tabs)
+            .field("footer", &self.footer)
             .finish()
     }
+}
+
+/// Credits in the page footer: an optional linked text, extra links, and a
+/// plain-text note such as a disclaimer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Footer {
+    pub text: Option<String>,
+    pub url: Option<String>,
+    pub links: Vec<FooterLink>,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FooterLink {
+    pub label: String,
+    pub url: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,6 +176,28 @@ struct RawConfig {
     #[serde(default)]
     x_bearer_token: String,
     tabs: Vec<RawTab>,
+    #[serde(default)]
+    footer: Option<RawFooter>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawFooter {
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    links: Vec<RawFooterLink>,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawFooterLink {
+    label: String,
+    url: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -342,7 +383,89 @@ impl RawConfig {
             timezone_label,
             x_bearer_token,
             tabs,
+            footer: match self.footer {
+                Some(raw) => normalize_footer(raw)?,
+                None => None,
+            },
         })
+    }
+}
+
+/// Trims the footer and drops it when nothing is left to show.
+fn normalize_footer(raw: RawFooter) -> Result<Option<Footer>, ConfigError> {
+    let text = match raw.text.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(text) if text.chars().count() > 200 || text.chars().any(char::is_control) => {
+            return Err(ConfigError::new(
+                "config: footer.text must be at most 200 printable characters",
+            ));
+        }
+        Some(text) => Some(text.to_string()),
+    };
+    let url = match raw.url.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(url) => Some(normalize_link_url(url, "footer.url")?),
+    };
+    if raw.links.len() > 20 {
+        return Err(ConfigError::new(
+            "config: footer.links allows at most 20 links",
+        ));
+    }
+    let mut links = Vec::with_capacity(raw.links.len());
+    for link in raw.links {
+        let label = link.label.trim();
+        if label.is_empty() || label.chars().count() > 60 || label.chars().any(char::is_control) {
+            return Err(ConfigError::new(
+                "config: each footer link label must be 1–60 printable characters",
+            ));
+        }
+        links.push(FooterLink {
+            label: label.to_string(),
+            url: normalize_link_url(link.url.trim(), "footer link url")?,
+        });
+    }
+    let note = match raw.note.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(note) if note.chars().count() > 300 || note.chars().any(char::is_control) => {
+            return Err(ConfigError::new(
+                "config: footer.note must be at most 300 printable characters",
+            ));
+        }
+        Some(note) => Some(note.to_string()),
+    };
+    // A bare url still gets visible text so the link is not empty.
+    let text = text.or_else(|| url.clone());
+    if text.is_none() && links.is_empty() && note.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(Footer {
+        text,
+        url,
+        links,
+        note,
+    }))
+}
+
+/// Footer links must be absolute http(s) URLs with a host.
+fn normalize_link_url(url: &str, field: &str) -> Result<String, ConfigError> {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"));
+    let ok = match rest {
+        Some(rest) => {
+            let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+            !host.is_empty()
+                && url.len() <= 2048
+                && !url.chars().any(|c| c.is_whitespace() || c.is_control())
+        }
+        None => false,
+    };
+    if ok {
+        Ok(url.to_string())
+    } else {
+        Err(ConfigError::new(format!(
+            "config: {field} must be an http:// or https:// URL"
+        )))
     }
 }
 
@@ -499,6 +622,14 @@ mod tests {
         assert_eq!(config.base_path, "");
         assert_eq!(config.timezone, "Asia/Taipei");
         assert_eq!(config.timezone_label.as_deref(), Some("Taiwan"));
+        let footer = config.footer.as_ref().unwrap();
+        assert_eq!(footer.url.as_deref(), Some("https://0x6.ai/"));
+        assert_eq!(footer.links.len(), 4);
+        assert!(footer
+            .note
+            .as_deref()
+            .unwrap()
+            .starts_with("Rights in posts"));
         assert_eq!(config.data_dir, "data");
         assert_eq!(config.posts_per_tab, 20);
         assert_eq!(config.max_image_bytes, 8_000_000);
@@ -617,5 +748,64 @@ mod tests {
         assert!(
             Config::from_yaml(&format!("timezone_label: \"{}\"\n{base}", "x".repeat(33))).is_err()
         );
+    }
+
+    #[test]
+    fn footer_is_optional_and_validated() {
+        let base = "tabs:\n  - label: A\n    accounts: [abc]\n";
+        assert_eq!(Config::from_yaml(base).unwrap().footer, None);
+        let empty = Config::from_yaml(&format!("footer:\n  text: \" \"\n{base}")).unwrap();
+        assert_eq!(empty.footer, None);
+
+        let full = Config::from_yaml(&format!(
+            "footer:\n  text: \" © Example \"\n  url: \"https://example.com/\"\n  links:\n    - {{ label: About, url: \"https://example.com/about.html\" }}\n{base}"
+        ))
+        .unwrap();
+        let footer = full.footer.unwrap();
+        assert_eq!(footer.text.as_deref(), Some("© Example"));
+        assert_eq!(footer.url.as_deref(), Some("https://example.com/"));
+        assert_eq!(
+            footer.links,
+            vec![FooterLink {
+                label: "About".into(),
+                url: "https://example.com/about.html".into()
+            }]
+        );
+
+        assert_eq!(footer.note, None);
+        let note_only = Config::from_yaml(&format!(
+            "footer:\n  note: \" Rights <b>belong</b> to X. \"\n{base}"
+        ))
+        .unwrap()
+        .footer
+        .unwrap();
+        assert_eq!(
+            note_only.note.as_deref(),
+            Some("Rights <b>belong</b> to X.")
+        );
+        assert_eq!(note_only.text, None);
+        assert!(note_only.links.is_empty());
+        let long = format!("footer:\n  note: \"{}\"\n{base}", "n".repeat(301));
+        assert!(Config::from_yaml(&long).is_err());
+        let max = format!("footer:\n  note: \"{}\"\n{base}", "貼".repeat(300));
+        assert!(Config::from_yaml(&max).is_ok());
+
+        let bare = Config::from_yaml(&format!("footer:\n  url: \"http://example.com\"\n{base}"))
+            .unwrap()
+            .footer
+            .unwrap();
+        assert_eq!(bare.text.as_deref(), Some("http://example.com"));
+
+        for bad in [
+            "footer:\n  url: \"javascript:alert(1)\"\n",
+            "footer:\n  url: \"//example.com\"\n",
+            "footer:\n  url: \"https://\"\n",
+            "footer:\n  links:\n    - { label: X, url: \"data:text/html,hi\" }\n",
+            "footer:\n  links:\n    - { label: \" \", url: \"https://example.com\" }\n",
+            "footer:\n  links:\n    - { label: X, url: \"https://exa mple.com\" }\n",
+            "footer:\n  colour: red\n",
+        ] {
+            assert!(Config::from_yaml(&format!("{bad}{base}")).is_err(), "{bad}");
+        }
     }
 }
