@@ -17,25 +17,33 @@ cargo run --release -- config.yml
 
 Open `http://127.0.0.1:8181/`. The first tab loads with that request. Other tabs load when you open them.
 
-### Toolchain in `.venv`
+### Toolchain
 
-The Rust toolchain lives inside the project, not in `~/.cargo` (`.venv/` is git-ignored):
+`scripts/build.sh` and `scripts/run.sh` look for Rust in this order (see `scripts/toolchain.sh`):
 
-```bash
-export RUSTUP_HOME="$PWD/.venv/rustup" CARGO_HOME="$PWD/.venv/cargo"
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal --default-toolchain stable
-export PATH="$CARGO_HOME/bin:$PATH"
-```
+1. `RUSTUP_HOME` / `CARGO_HOME` already set in the environment.
+2. A shared toolchain env file: `XFEED_RUST_ENV`, or `../.toolchains/rust/env.sh` next to the repository. Several projects on one host can share it:
+
+   ```bash
+   TC=/path/to/.toolchains/rust
+   export RUSTUP_HOME="$TC/rustup" CARGO_HOME="$TC/cargo"
+   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal --default-toolchain stable -c clippy -c rustfmt
+   printf 'export RUSTUP_HOME=%s/rustup\nexport CARGO_HOME=%s/cargo\nexport PATH=%s/cargo/bin:$PATH\n' "$TC" "$TC" "$TC" > "$TC/env.sh"
+   ```
+
+3. A project-local toolchain in `.venv/rustup` and `.venv/cargo` (`.venv/` is git-ignored).
+4. `cargo` on `PATH`, for example from a regular rustup install.
 
 ### Production: `scripts/run.sh`
 
-`scripts/run.sh` sets `RUSTUP_HOME`, `CARGO_HOME`, and `PATH` to the `.venv` toolchain, builds the release binary if sources changed, and runs `target/release/xfeed config.yml` in the foreground. It exits with a hint if `config.yml` is missing.
-
 ```bash
-scripts/run.sh
+scripts/build.sh            # build target/release/xfeed (extra args go to cargo, e.g. -j2)
+scripts/run.sh              # serve config.yml in the foreground
 ```
 
-Run it under your process manager of choice to keep it up. To pick up changes, stop it and start `scripts/run.sh` again.
+`scripts/run.sh` starts the existing `target/release/xfeed config.yml` right away, so a restart takes about a second. It builds first only when the binary is missing or `XFEED_BUILD=1` is set, and exits with a hint if `config.yml` is missing.
+
+Run it under your process manager of choice to keep it up. To deploy changes, run `scripts/build.sh`, then restart `scripts/run.sh`.
 
 `cargo run --release` builds a single binary, `target/release/xfeed`. The runtime inputs are the config file, the data directory it names, and optionally `X_BEARER_TOKEN`.
 
