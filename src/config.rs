@@ -421,7 +421,7 @@ fn normalize_footer(raw: RawFooter) -> Result<Option<Footer>, ConfigError> {
         }
         links.push(FooterLink {
             label: label.to_string(),
-            url: normalize_link_url(link.url.trim(), "footer link url")?,
+            url: normalize_footer_link(link.url.trim())?,
         });
     }
     let note = match raw.note.as_deref().map(str::trim) {
@@ -444,6 +444,52 @@ fn normalize_footer(raw: RawFooter) -> Result<Option<Footer>, ConfigError> {
         links,
         note,
     }))
+}
+
+/// Footer links may be http(s) URLs or `mailto:` with exactly one address.
+fn normalize_footer_link(url: &str) -> Result<String, ConfigError> {
+    match url.strip_prefix("mailto:") {
+        Some(address) if is_plain_email(address) => Ok(url.to_string()),
+        Some(_) => Err(ConfigError::new(
+            "config: footer link mailto: needs one plain address like name@example.com (no ?, spaces, or extra recipients)",
+        )),
+        None => normalize_link_url(url, "footer link url")
+            .map_err(|_| ConfigError::new("config: footer link url must be http://, https://, or mailto:")),
+    }
+}
+
+/// `local@domain.tld` with conservative characters only. Rejects query strings
+/// (`?cc=`, `?body=`), commas, whitespace, encoded bytes, and control characters.
+fn is_plain_email(address: &str) -> bool {
+    if address.is_empty() || address.len() > 254 {
+        return false;
+    }
+    let Some((local, domain)) = address.split_once('@') else {
+        return false;
+    };
+    let local_ok = !local.is_empty()
+        && local.len() <= 64
+        && !local.starts_with('.')
+        && !local.ends_with('.')
+        && !local.contains("..")
+        && local
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'+' | b'-'));
+    let labels: Vec<&str> = domain.split('.').collect();
+    let domain_ok = labels.len() >= 2
+        && labels.iter().all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
+        && labels
+            .last()
+            .is_some_and(|tld| tld.bytes().all(|b| b.is_ascii_alphabetic()));
+    local_ok && domain_ok
 }
 
 /// Footer links must be absolute http(s) URLs with a host.
@@ -623,8 +669,11 @@ mod tests {
         assert_eq!(config.timezone, "Asia/Taipei");
         assert_eq!(config.timezone_label.as_deref(), Some("Taiwan"));
         let footer = config.footer.as_ref().unwrap();
-        assert_eq!(footer.url.as_deref(), Some("https://0x6.ai/"));
-        assert_eq!(footer.links.len(), 4);
+        assert_eq!(footer.text.as_deref(), Some("Copyright © 0x6.ai"));
+        assert_eq!(footer.url, None);
+        assert_eq!(footer.links.len(), 5);
+        assert_eq!(footer.links[3].url, "mailto:0x6@mail.grokbot.com");
+        assert_eq!(footer.links[4].label, "☕ Buy me a coffee");
         assert!(footer
             .note
             .as_deref()
@@ -804,8 +853,40 @@ mod tests {
             "footer:\n  links:\n    - { label: \" \", url: \"https://example.com\" }\n",
             "footer:\n  links:\n    - { label: X, url: \"https://exa mple.com\" }\n",
             "footer:\n  colour: red\n",
+            "footer:\n  links:\n    - { label: M, url: \"mailto:\" }\n",
+            "footer:\n  links:\n    - { label: M, url: \"mailto:a@b.c?bcc=x@y.zz\" }\n",
+            "footer:\n  links:\n    - { label: M, url: \"mailto:a@b.cc,c@d.ee\" }\n",
+            "footer:\n  links:\n    - { label: M, url: \"mailto:a b@c.dd\" }\n",
+            "footer:\n  links:\n    - { label: M, url: \"mailto:a@b.cc\\nBcc: x@y.zz\" }\n",
+            "footer:\n  links:\n    - { label: M, url: \"mailto:a%0A@b.cc\" }\n",
+            "footer:\n  links:\n    - { label: M, url: \"mailto:@b.cc\" }\n",
+            "footer:\n  links:\n    - { label: M, url: \"mailto:a@localhost\" }\n",
+            "footer:\n  links:\n    - { label: M, url: \"javascript:alert(1)\" }\n",
+            "footer:\n  url: \"mailto:a@b.cc\"\n",
         ] {
             assert!(Config::from_yaml(&format!("{bad}{base}")).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn footer_links_accept_plain_mailto() {
+        let base = "tabs:\n  - label: A\n    accounts: [abc]\n";
+        for url in [
+            "mailto:a@b.c",
+            "mailto:a@b.cc",
+            "mailto:0x6@mail.grokbot.com",
+            "mailto:first.last+tag@sub-1.example.org",
+        ] {
+            let config = Config::from_yaml(&format!(
+                "footer:\n  links:\n    - {{ label: Feedback, url: \"{url}\" }}\n{base}"
+            ))
+            .unwrap();
+            assert_eq!(config.footer.unwrap().links[0].url, url);
+        }
+        assert!(is_plain_email("a@b.cc"));
+        assert!(is_plain_email("a@b.c"));
+        assert!(!is_plain_email("a@b.1"));
+        assert!(!is_plain_email("a..b@c.dd"));
+        assert!(!is_plain_email(&format!("{}@b.cc", "a".repeat(65))));
     }
 }
