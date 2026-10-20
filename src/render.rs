@@ -171,18 +171,13 @@ fn page_html(config: &Config, view: &TabView) -> String {
         }
         html.push_str("</section>");
     }
-    html.push_str("</main><footer>");
+    html.push_str("</main>");
     if let Some(footer) = &config.footer {
+        html.push_str("<footer>");
         push_footer(&mut html, footer);
+        html.push_str("</footer>");
     }
-    html.push_str("<a href=\"");
-    let health = if config.base_path.is_empty() {
-        "/health".to_string()
-    } else {
-        format!("{}/health", config.base_path)
-    };
-    push_esc(&mut html, &health);
-    html.push_str("\">health</a></footer><script>");
+    html.push_str("<script>");
     html.push_str(SCRIPT);
     html.push_str("</script></body></html>");
     html
@@ -201,22 +196,29 @@ fn push_footer(html: &mut String, footer: &Footer) {
     }
 }
 
+/// `<span>text</span> <span class="footer-links">a · b</span>`, like 0x6.ai.
 fn push_credits(html: &mut String, footer: &Footer) {
     html.push_str("<p class=\"credits\">");
-    let mut first = true;
     if let Some(text) = &footer.text {
+        html.push_str("<span>");
         match &footer.url {
             Some(url) => push_ext_link(html, url, text),
             None => push_esc(html, text),
         }
-        first = false;
+        html.push_str("</span>");
     }
-    for link in &footer.links {
-        if !first {
-            html.push_str(" · ");
+    if !footer.links.is_empty() {
+        if footer.text.is_some() {
+            html.push(' ');
         }
-        push_ext_link(html, &link.url, &link.label);
-        first = false;
+        html.push_str("<span class=\"footer-links\">");
+        for (i, link) in footer.links.iter().enumerate() {
+            if i > 0 {
+                html.push_str(" · ");
+            }
+            push_ext_link(html, &link.url, &link.label);
+        }
+        html.push_str("</span>");
     }
     html.push_str("</p>");
 }
@@ -224,7 +226,12 @@ fn push_credits(html: &mut String, footer: &Footer) {
 fn push_ext_link(html: &mut String, url: &str, label: &str) {
     html.push_str("<a href=\"");
     push_esc(html, url);
-    html.push_str("\" target=\"_blank\" rel=\"noopener noreferrer\">");
+    if url.starts_with("mailto:") {
+        // Mail links open the mail client; a new tab would only leave a blank page.
+        html.push_str("\">");
+    } else {
+        html.push_str("\" target=\"_blank\" rel=\"noopener noreferrer\">");
+    }
     push_esc(html, label);
     html.push_str("</a>");
 }
@@ -599,7 +606,8 @@ mod tests {
         assert!(!html.contains("<img onerror"));
         assert!(html.contains("Showing saved posts."));
         assert!(html.contains("href=\"#news\""));
-        assert!(html.contains("href=\"/x/health\""));
+        assert!(!html.contains("health"));
+        assert!(!html.contains("<footer"));
         assert!(html.contains("id=\"news\""));
         assert!(html.contains("id=\"tech\" hidden"));
         assert!(html.contains("Open this tab to load posts."));
@@ -690,7 +698,7 @@ mod tests {
     #[test]
     fn footer_credits_are_escaped_links() {
         let config = Config::from_yaml(
-            "x_bearer_token: \"super-secret-token-value\"\nfooter:\n  text: \"© A<b>\"\n  url: \"https://example.com/?a=1&b=2\"\n  links:\n    - { label: About, url: \"https://example.com/about.html\" }\n    - { label: \"T&C\", url: \"http://example.com/terms\" }\n  note: \"Rights <b>belong</b> to authors & X.\"\ntabs:\n  - label: News\n    accounts: [example]\n",
+            "x_bearer_token: \"super-secret-token-value\"\nfooter:\n  text: \"© A<b>\"\n  url: \"https://example.com/?a=1&b=2\"\n  links:\n    - { label: About, url: \"https://example.com/about.html\" }\n    - { label: \"T&C\", url: \"http://example.com/terms\" }\n    - { label: Mail, url: \"mailto:a+b@example.com\" }\n    - { label: \"☕ Buy me a coffee\", url: \"https://example.com/coffee\" }\n  note: \"Rights <b>belong</b> to authors & X.\"\ntabs:\n  - label: News\n    accounts: [example]\n",
         )
         .unwrap();
         let view = TabView {
@@ -702,7 +710,7 @@ mod tests {
         };
         let html = String::from_utf8(render_page(&config, &view).raw.to_vec()).unwrap();
         assert!(html.contains(
-            "<footer><p class=\"credits\"><a href=\"https://example.com/?a=1&amp;b=2\" target=\"_blank\" rel=\"noopener noreferrer\">© A&lt;b&gt;</a> · <a href=\"https://example.com/about.html\" target=\"_blank\" rel=\"noopener noreferrer\">About</a> · <a href=\"http://example.com/terms\" target=\"_blank\" rel=\"noopener noreferrer\">T&amp;C</a></p><p class=\"note\">Rights &lt;b&gt;belong&lt;/b&gt; to authors &amp; X.</p><a href=\"/health\">health</a></footer>"
+            "<footer><p class=\"credits\"><span><a href=\"https://example.com/?a=1&amp;b=2\" target=\"_blank\" rel=\"noopener noreferrer\">© A&lt;b&gt;</a></span> <span class=\"footer-links\"><a href=\"https://example.com/about.html\" target=\"_blank\" rel=\"noopener noreferrer\">About</a> · <a href=\"http://example.com/terms\" target=\"_blank\" rel=\"noopener noreferrer\">T&amp;C</a> · <a href=\"mailto:a+b@example.com\">Mail</a> · <a href=\"https://example.com/coffee\" target=\"_blank\" rel=\"noopener noreferrer\">☕ Buy me a coffee</a></span></p><p class=\"note\">Rights &lt;b&gt;belong&lt;/b&gt; to authors &amp; X.</p></footer><script>"
         ));
     }
 
@@ -720,9 +728,27 @@ mod tests {
             message: None,
         };
         let html = String::from_utf8(render_page(&config, &view).raw.to_vec()).unwrap();
-        assert!(html.contains(
-            "<footer><p class=\"note\">Content is delayed.</p><a href=\"/health\">health</a></footer>"
-        ));
+        assert!(html.contains("<footer><p class=\"note\">Content is delayed.</p></footer>"));
         assert!(!html.contains("class=\"credits\""));
+    }
+
+    #[test]
+    fn footer_plain_text_credits_match_site_layout() {
+        let config = Config::from_yaml(
+            "footer:\n  text: \"Copyright © 0x6.ai\"\n  links:\n    - { label: About, url: \"https://0x6.ai/about.html\" }\n    - { label: \"0x6@mail.grokbot.com\", url: \"mailto:0x6@mail.grokbot.com\" }\ntabs:\n  - label: News\n    accounts: [example]\n",
+        )
+        .unwrap();
+        let view = TabView {
+            id: "news".into(),
+            label: "News".into(),
+            posts: Vec::new(),
+            updated_at: None,
+            message: None,
+        };
+        let html = String::from_utf8(render_page(&config, &view).raw.to_vec()).unwrap();
+        assert!(html.contains(
+            "<footer><p class=\"credits\"><span>Copyright © 0x6.ai</span> <span class=\"footer-links\"><a href=\"https://0x6.ai/about.html\" target=\"_blank\" rel=\"noopener noreferrer\">About</a> · <a href=\"mailto:0x6@mail.grokbot.com\">0x6@mail.grokbot.com</a></span></p></footer>"
+        ));
+        assert!(!html.contains("health"));
     }
 }
