@@ -781,7 +781,7 @@ mod tests {
             .to_str()
             .unwrap()
             .to_string();
-        assert_eq!(views.score(), 1);
+        assert_eq!(views.views_today(), 1);
         let fragment = request(
             service.clone(),
             Method::GET,
@@ -791,7 +791,7 @@ mod tests {
         )
         .await;
         assert_eq!(fragment.status(), StatusCode::OK);
-        assert_eq!(views.score(), 2);
+        assert_eq!(views.views_today(), 2);
         let cached = request(
             service.clone(),
             Method::GET,
@@ -801,7 +801,7 @@ mod tests {
         )
         .await;
         assert_eq!(cached.status(), StatusCode::NOT_MODIFIED);
-        assert_eq!(views.score(), 3, "a revalidated page is still a view");
+        assert_eq!(views.views_today(), 3, "a revalidated page is still a view");
 
         for (method, uri) in [
             (Method::HEAD, "/x/"),
@@ -815,7 +815,7 @@ mod tests {
             (Method::OPTIONS, "/x/popularity.json"),
         ] {
             let _ = request(service.clone(), method.clone(), uri, Some(BROWSER), None).await;
-            assert_eq!(views.score(), 3, "{method} {uri} must not count");
+            assert_eq!(views.views_today(), 3, "{method} {uri} must not count");
         }
         for agent in [
             None,
@@ -829,7 +829,7 @@ mod tests {
             for uri in ["/x/", "/x/tab/news"] {
                 let response = request(service.clone(), Method::GET, uri, agent, None).await;
                 assert_eq!(response.status(), StatusCode::OK);
-                assert_eq!(views.score(), 3, "{agent:?} on {uri} is not a human view");
+                assert_eq!(views.views_today(), 3, "{agent:?} on {uri} is not a human view");
             }
         }
 
@@ -860,7 +860,7 @@ mod tests {
             .unwrap();
         let text = std::str::from_utf8(&body).unwrap();
         assert!(
-            text.starts_with(r#"{"version":1,"id":"x-feed","metric":"pageviews_30d","score":3,"window_days":30,"updated":""#),
+            text.starts_with(r#"{"version":1,"id":"x-feed","metric":"pageviews_30d","score":0,"window_days":30,"updated":""#),
             "{text}"
         );
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();

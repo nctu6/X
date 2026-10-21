@@ -4,14 +4,21 @@
 //! Only one number per local day is kept: no IP addresses, user agents,
 //! paths, or anything else about a visitor. The User-Agent is looked at once,
 //! at request time, to skip bots, and is never stored. Recording a view is one
-//! atomic add; the mutex is taken only when the local day rolls over, on
-//! flush, and when the score is read.
+//! atomic add; the mutex is taken only when the local day rolls over and on
+//! flush.
+//!
+//! The published score is a daily snapshot: it covers the 30 complete local
+//! days before today and is computed once per local date (at startup and on
+//! the first request after midnight). Within a day every response is the
+//! same body with the same `updated` time.
 
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
+
+use bytes::Bytes;
 
 use chrono::{DateTime, Days, NaiveDate, SecondsFormat, TimeZone, Utc};
 use chrono_tz::Tz;
@@ -19,7 +26,7 @@ use serde::{Deserialize, Serialize};
 
 /// File under `data_dir` that holds the per-day totals.
 pub const FILE_NAME: &str = "pageviews.json";
-/// Days summed into the score, today included.
+/// Complete local days summed into the score: the 30 days before today.
 pub const WINDOW_DAYS: u64 = 30;
 /// Days kept in the file, today included. Older days are dropped on flush.
 pub const KEEP_DAYS: u64 = 60;
@@ -119,6 +126,13 @@ struct Inner {
     /// Fixed clock for tests, or `SYSTEM_TIME`.
     fixed_now: AtomicI64,
     state: Mutex<State>,
+    /// Published `/popularity.json` body and the local date it was made for.
+    snapshot: RwLock<Option<Snapshot>>,
+}
+
+struct Snapshot {
+    day: NaiveDate,
+    body: Bytes,
 }
 
 struct State {
@@ -182,7 +196,7 @@ impl PageViews {
     fn build(tz: Tz, path: Option<PathBuf>, days: BTreeMap<NaiveDate, u64>) -> Self {
         let now = system_now();
         let day = local_date(now, tz);
-        Self {
+        let views = Self {
             inner: Arc::new(Inner {
                 tz,
                 path,
@@ -194,14 +208,24 @@ impl PageViews {
                     days,
                     dirty: false,
                 }),
+                snapshot: RwLock::new(None),
             }),
-        }
+        };
+        // The startup snapshot.
+        views.popularity_json();
+        views
     }
 
-    /// Pins the clock (tests). The next view re-checks the day.
+    /// Pins the clock (tests). The next view re-checks the day and the next
+    /// read makes a new snapshot.
     pub fn set_now(&self, unix: i64) {
         self.inner.fixed_now.store(unix, Ordering::Relaxed);
         self.inner.day_end.store(i64::MIN, Ordering::Relaxed);
+        *self
+            .inner
+            .snapshot
+            .write()
+            .unwrap_or_else(|err| err.into_inner()) = None;
     }
 
     fn now(&self) -> i64 {
@@ -241,44 +265,80 @@ impl PageViews {
             .unwrap_or_else(|err| err.into_inner())
     }
 
-    /// Views in the last `WINDOW_DAYS` local days, today included.
-    pub fn score(&self) -> u64 {
-        self.score_at(self.now())
+    /// Views counted so far on the current local day (live, not published).
+    pub fn views_today(&self) -> u64 {
+        let today = local_date(self.now(), self.inner.tz);
+        self.sum_days(today, today)
     }
 
+    /// Views in the `WINDOW_DAYS` complete local days before the day of `now`.
     fn score_at(&self, now: i64) -> u64 {
         let today = local_date(now, self.inner.tz);
-        let from = today
-            .checked_sub_days(Days::new(WINDOW_DAYS - 1))
-            .unwrap_or(NaiveDate::MIN);
+        let (Some(from), Some(to)) = (
+            today.checked_sub_days(Days::new(WINDOW_DAYS)),
+            today.checked_sub_days(Days::new(1)),
+        ) else {
+            return 0;
+        };
+        self.sum_days(from, to)
+    }
+
+    fn sum_days(&self, from: NaiveDate, to: NaiveDate) -> u64 {
         let state = self.lock();
         let pending = self.inner.pending.load(Ordering::Relaxed);
         let mut total: u64 = state
             .days
-            .range(from..=today)
+            .range(from..=to)
             .map(|(_, count)| *count)
             .fold(0, u64::saturating_add);
-        if (from..=today).contains(&state.day) {
+        if (from..=to).contains(&state.day) {
             total = total.saturating_add(pending);
         }
         total
     }
 
-    /// Body of `/popularity.json`, computed now.
-    pub fn popularity_json(&self) -> Vec<u8> {
+    /// Body of `/popularity.json`: today's snapshot, made on the first call
+    /// of each local date.
+    pub fn popularity_json(&self) -> Bytes {
         let now = self.now();
+        let today = local_date(now, self.inner.tz);
+        if let Some(snapshot) = self
+            .inner
+            .snapshot
+            .read()
+            .unwrap_or_else(|err| err.into_inner())
+            .as_ref()
+            .filter(|snapshot| snapshot.day == today)
+        {
+            return snapshot.body.clone();
+        }
+        let mut slot = self
+            .inner
+            .snapshot
+            .write()
+            .unwrap_or_else(|err| err.into_inner());
+        if let Some(snapshot) = slot.as_ref().filter(|snapshot| snapshot.day == today) {
+            return snapshot.body.clone();
+        }
         let updated = DateTime::<Utc>::from_timestamp(now, 0)
             .unwrap_or_default()
             .to_rfc3339_opts(SecondsFormat::Secs, true);
-        serde_json::to_vec(&Popularity {
-            version: VERSION,
-            id: ID,
-            metric: METRIC,
-            score: self.score_at(now),
-            window_days: WINDOW_DAYS,
-            updated,
-        })
-        .unwrap_or_else(|_| b"{}".to_vec())
+        let body = Bytes::from(
+            serde_json::to_vec(&Popularity {
+                version: VERSION,
+                id: ID,
+                metric: METRIC,
+                score: self.score_at(now),
+                window_days: WINDOW_DAYS,
+                updated,
+            })
+            .unwrap_or_else(|_| b"{}".to_vec()),
+        );
+        *slot = Some(Snapshot {
+            day: today,
+            body: body.clone(),
+        });
+        body
     }
 
     /// Folds pending views, drops days older than `KEEP_DAYS`, and writes the
@@ -413,28 +473,35 @@ mod tests {
         assert_eq!(pending, 2);
     }
 
+    fn body(views: &PageViews) -> String {
+        String::from_utf8(views.popularity_json().to_vec()).unwrap()
+    }
+
     #[test]
-    fn score_sums_the_last_thirty_days_including_today() {
+    fn score_sums_the_thirty_complete_days_before_today() {
         let views = PageViews::in_memory(taipei());
-        // 2026-09-21 is 30 days before 2026-10-21, so it falls outside.
-        let outside = taipei()
-            .with_ymd_and_hms(2026, 9, 21, 12, 0, 0)
-            .unwrap()
-            .timestamp();
-        let first = taipei()
-            .with_ymd_and_hms(2026, 9, 22, 12, 0, 0)
-            .unwrap()
-            .timestamp();
-        for (when, count) in [(outside, 5), (first, 3), (at(20, 12), 2), (at(21, 9), 1)] {
+        let day = |month, day| {
+            taipei()
+                .with_ymd_and_hms(2026, month, day, 12, 0, 0)
+                .unwrap()
+                .timestamp()
+        };
+        // For 2026-10-21 the window is 2026-09-21 ..= 2026-10-20.
+        for (when, count) in [
+            (day(9, 20), 7),
+            (day(9, 21), 5),
+            (day(10, 1), 3),
+            (day(10, 20), 2),
+            (day(10, 21), 1),
+        ] {
             views.set_now(when);
             for _ in 0..count {
                 views.record();
             }
         }
-        views.set_now(at(21, 23));
-        assert_eq!(views.score(), 6);
-        views.set_now(at(22, 1));
-        assert_eq!(views.score(), 3);
+        assert_eq!(views.score_at(at(21, 23)), 10);
+        assert_eq!(views.score_at(at(22, 1)), 6, "09-21 left, 10-21 joined");
+        assert_eq!(views.views_today(), 1);
     }
 
     #[test]
@@ -442,17 +509,11 @@ mod tests {
         let views = PageViews::in_memory(taipei());
         views.set_now(at(21, 9));
         assert_eq!(
-            String::from_utf8(views.popularity_json()).unwrap(),
+            body(&views),
             r#"{"version":1,"id":"x-feed","metric":"pageviews_30d","score":0,"window_days":30,"updated":"2026-10-21T01:00:00Z"}"#,
             "no data yet publishes score 0"
         );
-        views.record();
-        let body = String::from_utf8(views.popularity_json()).unwrap();
-        assert_eq!(
-            body,
-            r#"{"version":1,"id":"x-feed","metric":"pageviews_30d","score":1,"window_days":30,"updated":"2026-10-21T01:00:00Z"}"#
-        );
-        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&body(&views)).unwrap();
         let mut keys: Vec<&str> = json
             .as_object()
             .unwrap()
@@ -466,6 +527,34 @@ mod tests {
         );
         assert!(json["score"].is_u64());
         assert!(json["updated"].as_str().unwrap().ends_with('Z'));
+    }
+
+    #[test]
+    fn snapshot_is_fixed_within_a_day_and_renews_after_midnight() {
+        let views = PageViews::in_memory(taipei());
+        views.set_now(at(20, 10));
+        for _ in 0..4 {
+            views.record();
+        }
+        views.set_now(at(21, 0) + 30);
+        let first = body(&views);
+        assert_eq!(
+            first,
+            r#"{"version":1,"id":"x-feed","metric":"pageviews_30d","score":4,"window_days":30,"updated":"2026-10-20T16:00:30Z"}"#
+        );
+        // Later the same Taipei day: more views, same published body.
+        views.inner.fixed_now.store(at(21, 23), Ordering::Relaxed);
+        for _ in 0..3 {
+            views.record();
+        }
+        assert_eq!(views.views_today(), 3);
+        assert_eq!(body(&views), first);
+        // First request after the next midnight makes a new snapshot.
+        views.inner.fixed_now.store(at(22, 8), Ordering::Relaxed);
+        assert_eq!(
+            body(&views),
+            r#"{"version":1,"id":"x-feed","metric":"pageviews_30d","score":7,"window_days":30,"updated":"2026-10-22T00:00:00Z"}"#
+        );
     }
 
     #[test]
@@ -531,7 +620,7 @@ mod tests {
         let again = PageViews::load(path.clone(), taipei()).unwrap();
         again.set_now(at(21, 10));
         again.record();
-        assert_eq!(again.score(), 3);
+        assert_eq!(again.views_today(), 3);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -541,7 +630,8 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "not json").unwrap();
         let views = PageViews::load(path.clone(), taipei()).unwrap();
-        assert_eq!(views.score(), 0);
+        assert_eq!(views.views_today(), 0);
+        assert!(body(&views).contains(r#""score":0,"#));
         assert!(path.with_extension("json.corrupt").exists());
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
