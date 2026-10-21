@@ -125,8 +125,11 @@ With `base_path: /` (the default). With a prefix such as `/x`, every path below 
 | GET | `/api/news` | JSON for that tab. `/api/news.json` is the same. This also counts as opening the tab. |
 | GET | `/media/bbcworld/3_1.jpg` | A saved image. Long-lived immutable cache. Does not call X. |
 | GET | `/health` | `{"ok":true,"timezone":"Asia/Taipei","data_dir":"data"}`. Does not call X. |
+| GET | `/popularity.json` | `{"version":1,"id":"x-feed","metric":"pageviews_30d","score":123,"window_days":30,"updated":"2026-10-21T01:10:00Z"}`. Public and cross-origin. Does not call X. |
 
 HTML and JSON are gzipped or brotlied when that is smaller. Responses send `ETag` and `Vary: Accept-Encoding`. A matching `If-None-Match` returns `304` after the slot check, so a conditional request can still refresh a new slot. Health is `Cache-Control: no-store`.
+
+`/popularity.json` follows the 0x6.ai popularity spec v1, so the Works list on 0x6.ai can sort by it. The body has exactly the keys `version`, `id`, `metric`, `score`, `window_days`, and `updated`, in that order. `score` is an integer: human page views in the last 30 days, today included, with days in the configured time zone; it is `0` until there is data. `updated` is when the score was computed, in UTC with a `Z`. It is computed on each request from the stored daily totals. A page view is a `GET` of `/` or `/tab/<id>` that returns `200` or `304` from a browser. Requests whose User-Agent is missing, does not start with `Mozilla/`, or names a bot, crawler, spider, preview fetcher, monitor, headless browser, or script client (`curl`, `wget`, `python`, `go-http`, `node`, and so on) do not count; the User-Agent is checked at request time and never stored. HEAD, `/api`, `/media`, `/health`, `/popularity.json`, and errors do not count either. Only one total per day is stored, in `data/pageviews.json` (no IP addresses, user agents, or other visitor data). Counts are kept in memory, written every minute and on shutdown (tmp file + rename), and days older than 60 are dropped. The response sends `Content-Type: application/json; charset=utf-8`, `Access-Control-Allow-Origin: *`, and `Cache-Control: public, max-age=3600`. A plain `fetch()` needs no preflight; `OPTIONS` returns `204` with the CORS headers anyway.
 
 Post text is HTML-escaped. Links, mentions, hashtags, and cashtags become anchors. Timestamps link to the post on X. Photos and video stills are shown only when the URL is on `pbs.twimg.com` or `ton.twimg.com`.
 
@@ -187,7 +190,7 @@ Tests parse `config.example.yml` (never the real `config.yml`), check slot bound
 
 ## Layout
 
-`xfeed` is one crate. `main` serves HTTP or runs `update`. `store` owns the JSONL files, the in-memory posts, and the once-per-slot gate. `images` downloads media and serves the prune walk. `slot` maps a timestamp onto the four local windows. `render` builds the home page, a tab fragment, JSON, gzip, and brotli. `http` selects the encoding, compares the ETag after the slot check, and serves saved images. `xapi` calls the X API v2 and parses posts.
+`xfeed` is one crate. `main` serves HTTP or runs `update`. `store` owns the JSONL files, the in-memory posts, and the once-per-slot gate. `images` downloads media and serves the prune walk. `slot` maps a timestamp onto the four local windows. `render` builds the home page, a tab fragment, JSON, gzip, and brotli. `http` selects the encoding, compares the ETag after the slot check, and serves saved images. `xapi` calls the X API v2 and parses posts. `pageviews` keeps the daily view totals for `/popularity.json`.
 
 ## License
 
