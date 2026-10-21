@@ -1,14 +1,16 @@
 //! HTTP surface. A tab request may refresh that tab, then the handler
-//! serves the rendered body. Health never calls X.
+//! serves the rendered body. Health never calls X. Successful GETs of the
+//! page and tab fragments add to the aggregate page-view count.
 
 use axum::body::Body;
 use axum::extract::{Path, State};
-use axum::http::{header, HeaderMap, Response, StatusCode};
+use axum::http::{header, HeaderMap, Method, Response, StatusCode};
 use axum::routing::get;
 use axum::Router;
 use bytes::Bytes;
 
 use crate::images::{resolve_media, ImageSource, CACHE_CONTROL as MEDIA_CACHE};
+use crate::pageviews::{is_human_agent, PageViews};
 use crate::render::{
     cache_control, render_fragment, render_health, render_page, render_tab_json, Encoded,
 };
@@ -17,12 +19,14 @@ use crate::xapi::XSource;
 
 pub struct AppState<S, I> {
     pub store: Store<S, I>,
+    pub views: PageViews,
 }
 
 impl<S, I> Clone for AppState<S, I> {
     fn clone(&self) -> Self {
         Self {
             store: self.store.clone(),
+            views: self.views.clone(),
         }
     }
 }
@@ -39,12 +43,17 @@ where
         format!("{base}/")
     };
     let health = format!("{base}/health");
+    let popularity = format!("{base}/popularity.json");
     let tab = format!("{base}/tab/:tab");
     let api = format!("{base}/api/:tab");
     let media = format!("{base}/media/:account/:file");
     let mut router = Router::new()
         .route(&index, get(index_page))
         .route(&health, get(health_page))
+        .route(
+            &popularity,
+            get(popularity_json).options(popularity_preflight),
+        )
         .route(&tab, get(tab_fragment))
         .route(&api, get(tab_json))
         .route(&media, get(media_file));
@@ -56,6 +65,7 @@ where
 
 async fn index_page<S: XSource + 'static, I: ImageSource + 'static>(
     State(state): State<AppState<S, I>>,
+    method: Method,
     headers: HeaderMap,
 ) -> Response<Body> {
     let Some(first) = state.store.config().tabs.first().map(|tab| tab.id.clone()) else {
@@ -67,11 +77,14 @@ async fn index_page<S: XSource + 'static, I: ImageSource + 'static>(
     };
     let cache = cache_control(state.store.config().cache_max_age_secs);
     let page = render_page(state.store.config(), &view);
-    serve(&page, HTML, &headers, &cache, true)
+    let response = serve(&page, HTML, &headers, &cache, true);
+    count_view(&state.views, &method, &headers, &response);
+    response
 }
 
 async fn tab_fragment<S: XSource + 'static, I: ImageSource + 'static>(
     State(state): State<AppState<S, I>>,
+    method: Method,
     Path(tab): Path<String>,
     headers: HeaderMap,
 ) -> Response<Body> {
@@ -81,7 +94,48 @@ async fn tab_fragment<S: XSource + 'static, I: ImageSource + 'static>(
     };
     let cache = cache_control(state.store.config().cache_max_age_secs);
     let body = render_fragment(state.store.config(), &view);
-    serve(&body, HTML, &headers, &cache, true)
+    let response = serve(&body, HTML, &headers, &cache, true);
+    count_view(&state.views, &method, &headers, &response);
+    response
+}
+
+/// A page view is a GET (not HEAD) from a browser, not a bot, that served
+/// the HTML or confirmed the cached copy with `304`. The User-Agent is only
+/// read here and never kept.
+fn count_view(views: &PageViews, method: &Method, headers: &HeaderMap, response: &Response<Body>) {
+    let agent = headers
+        .get(header::USER_AGENT)
+        .and_then(|value| value.to_str().ok());
+    if method == Method::GET
+        && matches!(response.status(), StatusCode::OK | StatusCode::NOT_MODIFIED)
+        && is_human_agent(agent)
+    {
+        views.record();
+    }
+}
+
+/// Public and cross-origin so other sites can sort by it. A plain GET needs
+/// no preflight; OPTIONS is answered anyway.
+async fn popularity_json<S, I>(State(state): State<AppState<S, I>>) -> Response<Body> {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, JSON)
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+        .header(header::CACHE_CONTROL, POPULARITY_CACHE)
+        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+        .body(Body::from(state.views.popularity_json()))
+        .expect("popularity response")
+}
+
+async fn popularity_preflight() -> Response<Body> {
+    Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+        .header(header::ACCESS_CONTROL_ALLOW_METHODS, "GET, HEAD, OPTIONS")
+        .header(header::ACCESS_CONTROL_MAX_AGE, "86400")
+        .header(header::CACHE_CONTROL, POPULARITY_CACHE)
+        .body(Body::empty())
+        .expect("preflight response")
 }
 
 async fn tab_json<S: XSource + 'static, I: ImageSource + 'static>(
@@ -222,6 +276,7 @@ fn serve(
 }
 
 const HTML: &str = "text/html; charset=utf-8";
+const POPULARITY_CACHE: &str = "public, max-age=3600";
 const JSON: &str = "application/json; charset=utf-8";
 const UNKNOWN_TAB: &str = "{\"error\":\"unknown tab\"}";
 const CSP: &str = "default-src 'none'; connect-src 'self'; img-src 'self' https://pbs.twimg.com https://ton.twimg.com; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
@@ -426,6 +481,7 @@ mod tests {
             .unwrap();
         let service = router(AppState {
             store: store.clone(),
+            views: PageViews::in_memory(chrono_tz::Asia::Taipei),
         });
 
         let missing = call(service.clone(), "/", None, None).await;
@@ -629,7 +685,10 @@ mod tests {
         )
         .await
         .unwrap();
-        let service = router(AppState { store });
+        let service = router(AppState {
+            store,
+            views: PageViews::in_memory(chrono_tz::Asia::Taipei),
+        });
         let page = call(service.clone(), "/x/", None, None).await;
         let html = String::from_utf8(
             axum::body::to_bytes(page.into_body(), 1024 * 1024)
@@ -669,6 +728,178 @@ mod tests {
         assert_eq!(sneaky.status(), StatusCode::NOT_FOUND);
         let missing = call(service.clone(), "/x/media/example/nope.txt", None, None).await;
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    const BROWSER: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+
+    async fn request(
+        app: Router,
+        method: Method,
+        uri: &str,
+        agent: Option<&str>,
+        etag: Option<&str>,
+    ) -> Response<Body> {
+        let mut builder = Request::builder().method(method).uri(uri);
+        if let Some(agent) = agent {
+            builder = builder.header(header::USER_AGENT, agent);
+        }
+        if let Some(etag) = etag {
+            builder = builder.header(header::IF_NONE_MATCH, etag);
+        }
+        app.oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn page_views_count_human_html_gets_only_and_feed_popularity_json() {
+        let dir = temp_dir();
+        let mock = Mock {
+            calls: Arc::new(AtomicUsize::new(0)),
+            paths: Arc::new(Mutex::new(Vec::new())),
+        };
+        let config = Config::from_yaml(&format!(
+            "base_path: \"/x\"\ndata_dir: \"{}\"\ntabs:\n  - label: News\n    accounts: [example]\n",
+            dir.display()
+        ))
+        .unwrap();
+        let store = Store::open_with_clock(config, mock, IgnoreImages, Clock::system())
+            .await
+            .unwrap();
+        let views = PageViews::in_memory(chrono_tz::Asia::Taipei);
+        let service = router(AppState {
+            store,
+            views: views.clone(),
+        });
+
+        let page = request(service.clone(), Method::GET, "/x/", Some(BROWSER), None).await;
+        assert_eq!(page.status(), StatusCode::OK);
+        let etag = page
+            .headers()
+            .get(header::ETAG)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(views.score(), 1);
+        let fragment = request(
+            service.clone(),
+            Method::GET,
+            "/x/tab/news",
+            Some(BROWSER),
+            None,
+        )
+        .await;
+        assert_eq!(fragment.status(), StatusCode::OK);
+        assert_eq!(views.score(), 2);
+        let cached = request(
+            service.clone(),
+            Method::GET,
+            "/x/",
+            Some(BROWSER),
+            Some(&etag),
+        )
+        .await;
+        assert_eq!(cached.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(views.score(), 3, "a revalidated page is still a view");
+
+        for (method, uri) in [
+            (Method::HEAD, "/x/"),
+            (Method::HEAD, "/x/tab/news"),
+            (Method::GET, "/x/tab/nope"),
+            (Method::GET, "/x/api/news"),
+            (Method::GET, "/x/health"),
+            (Method::GET, "/x/popularity.json"),
+            (Method::GET, "/x/media/example/1_1.jpg"),
+            (Method::GET, "/x/missing"),
+            (Method::OPTIONS, "/x/popularity.json"),
+        ] {
+            let _ = request(service.clone(), method.clone(), uri, Some(BROWSER), None).await;
+            assert_eq!(views.score(), 3, "{method} {uri} must not count");
+        }
+        for agent in [
+            None,
+            Some(""),
+            Some("curl/8.5.0"),
+            Some("node"),
+            Some("python-requests/2.32"),
+            Some("Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"),
+            Some("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/130.0.0.0 Safari/537.36"),
+        ] {
+            for uri in ["/x/", "/x/tab/news"] {
+                let response = request(service.clone(), Method::GET, uri, agent, None).await;
+                assert_eq!(response.status(), StatusCode::OK);
+                assert_eq!(views.score(), 3, "{agent:?} on {uri} is not a human view");
+            }
+        }
+
+        let response = request(
+            service.clone(),
+            Method::GET,
+            "/x/popularity.json",
+            Some("node"),
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let headers = response.headers();
+        assert_eq!(
+            headers.get(header::CONTENT_TYPE).unwrap(),
+            "application/json; charset=utf-8"
+        );
+        assert_eq!(
+            headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(),
+            "*"
+        );
+        assert_eq!(
+            headers.get(header::CACHE_CONTROL).unwrap(),
+            "public, max-age=3600"
+        );
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let text = std::str::from_utf8(&body).unwrap();
+        assert!(
+            text.starts_with(r#"{"version":1,"id":"x-feed","metric":"pageviews_30d","score":3,"window_days":30,"updated":""#),
+            "{text}"
+        );
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json.as_object().unwrap().len(), 6);
+        assert!(json["score"].is_u64());
+        let updated = json["updated"].as_str().unwrap();
+        assert!(updated.ends_with('Z'));
+        assert!(chrono::DateTime::parse_from_rfc3339(updated).is_ok());
+
+        let preflight = request(
+            service.clone(),
+            Method::OPTIONS,
+            "/x/popularity.json",
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(preflight.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            preflight
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .unwrap(),
+            "*"
+        );
+        assert!(preflight
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_METHODS)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("GET"));
+
+        let unprefixed = request(service, Method::GET, "/popularity.json", None, None).await;
+        assert_eq!(
+            unprefixed.status(),
+            StatusCode::NOT_FOUND,
+            "respects base_path"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
