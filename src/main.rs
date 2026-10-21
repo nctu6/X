@@ -11,6 +11,7 @@ use xfeed::cli::{self, Command};
 use xfeed::config::Config;
 use xfeed::http::{router, AppState};
 use xfeed::images::{prune_media, ImageClient};
+use xfeed::pageviews::{PageViews, FILE_NAME as PAGEVIEWS_FILE};
 use xfeed::store::{Store, UpdateTarget};
 use xfeed::xapi::XClient;
 
@@ -57,13 +58,43 @@ async fn serve(path: PathBuf) -> Result<(), String> {
     let listener = TcpListener::bind(&listen)
         .await
         .map_err(|err| format!("bind {listen}: {err}"))?;
+    let views = PageViews::load(
+        std::path::Path::new(&store.config().data_dir).join(PAGEVIEWS_FILE),
+        store.config().tz(),
+    )?;
+    let flusher = tokio::spawn(flush_every_minute(views.clone()));
     tracing::info!(listen = %listen, path = %shown, "listening");
-    axum::serve(listener, router(AppState { store }))
-        .tcp_nodelay(true)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .map_err(|err| format!("server stopped: {err}"))?;
-    Ok(())
+    let served = axum::serve(
+        listener,
+        router(AppState {
+            store,
+            views: views.clone(),
+        }),
+    )
+    .tcp_nodelay(true)
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .map_err(|err| format!("server stopped: {err}"));
+    flusher.abort();
+    if let Err(err) = views.flush() {
+        tracing::warn!("page views not saved: {err}");
+    }
+    served
+}
+
+async fn flush_every_minute(views: PageViews) {
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    tick.tick().await;
+    loop {
+        tick.tick().await;
+        let views = views.clone();
+        match tokio::task::spawn_blocking(move || views.flush()).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(err)) => tracing::warn!("page views not saved: {err}"),
+            Err(err) => tracing::warn!("page views flush failed: {err}"),
+        }
+    }
 }
 
 async fn update(path: PathBuf, target: UpdateTarget) -> Result<(), String> {

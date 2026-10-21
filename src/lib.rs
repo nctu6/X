@@ -11,6 +11,7 @@ pub mod config;
 pub mod http;
 pub mod images;
 pub mod model;
+pub mod pageviews;
 pub mod render;
 pub mod slot;
 pub mod store;
