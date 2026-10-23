@@ -1,5 +1,8 @@
 /target
 /data
+/backups/
+.restore_state
+.restore_replaced_*/
 **/*.rs.bk
 .DS_Store
 .venv/

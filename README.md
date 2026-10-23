@@ -178,6 +178,16 @@ The image listens on `0.0.0.0:8181` (from `config.example.yml`), reads `/etc/xfe
 
 `docker run --rm ... xfeed update --tab News` refreshes that tab inside the container.
 
+## Backup
+
+`data/` and `config.yml` are not in git. `scripts/backup.sh` (installed as `/usr/local/bin/x_backup.sh`) runs daily from cron and writes `backups/<TS>/` inside the repo, which is git-ignored. Each snapshot has `data.tar.gz` (the JSONL files, `*.state.json`, and `pageviews.json`, each parsed before it is stored), `media.tar.gz` (`data/media`), `secrets.tar.gz.age` (`config.yml`, the Drive credentials, the crontab, and the backup scripts, encrypted with age), `MANIFEST.txt`, and `SHA256SUMS`. The folder is then uploaded to the Google Drive folder `X-backup` with `scripts/gdrive.py`, and each file is checked against Drive's md5. Local copies are kept 7 days and Drive copies 90 days. The log is `backups/backup.log`.
+
+```
+0 3 * * * X_DIR=/srv/X /usr/local/bin/x_backup.sh   # any daily hour, host time zone
+```
+
+`X_BACKUP_NO_UPLOAD=1` makes a local snapshot only. Restore with `scripts/restore.sh` (from Drive or `--from-dir backups/<TS>`). See [docs/RESTORE.md](docs/RESTORE.md).
+
 ## Tests
 
 ```bash
@@ -187,6 +197,8 @@ cargo build --release
 ```
 
 Tests parse `config.example.yml` (never the real `config.yml`), check slot boundaries, merge and dedupe JSONL, render HTML from mocked X JSON, and exercise single-flight fetches and HTTP with an in-process fake. They do not call the live API and do not need a real token.
+
+`tests/backup_roundtrip.sh` backs up fake data with a throwaway age key (no upload), restores it into a temp checkout, and compares the files. It needs `age` and `python3`.
 
 ## Layout
 
