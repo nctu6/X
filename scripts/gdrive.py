@@ -12,8 +12,11 @@ Usage:
   gdrive.py prune --days 90 [--dry-run]   # delete backup folders older than N days
   gdrive.py download <TS> <dest_dir>      # download X-backup/<TS>/ and md5-verify
   gdrive.py latest                        # print the newest complete <TS> (has SHA256SUMS)
+  gdrive.py verify <TS> [--local-dir DIR] # exit 0 only if X-backup/<TS>/ holds every local
+                                          # file with the same md5 and size, and SHA256SUMS
 Env: X_GDRIVE_CREDS (creds path), X_GDRIVE_ROOT
-     (folder name, default X-backup)
+     (folder name, default X-backup), X_BACKUP_ROOT (verify's default parent of
+     <TS>, default /srv/X/backups)
 """
 import argparse, datetime as dt, hashlib, json, os, re, sys, time
 import urllib.error, urllib.parse, urllib.request
@@ -233,6 +236,60 @@ def cmd_download(a):
         raise SystemExit(f"{bad} file(s) failed md5 verification")
 
 
+def _verify_one(local, folder):
+    """Problems with one Drive folder against the local snapshot ([] = verified)."""
+    remote = {}
+    for f in children(folder["id"]):
+        remote.setdefault(f["name"], []).append(f)
+    problems = []
+    for n, size, md5 in local:
+        cands = remote.get(n, [])
+        if not cands:
+            problems.append(f"{n}: missing on Drive")
+        elif not any(f.get("md5Checksum") == md5 and int(f.get("size", -1)) == size for f in cands):
+            problems.append(f"{n}: md5/size differ on Drive")
+    return problems
+
+
+def cmd_verify(a):
+    # Read-only. Any problem (or a Drive/network error) exits non-zero, so the
+    # caller keeps the local copy.
+    ts = os.path.basename(a.ts.rstrip("/"))
+    if not re.fullmatch(r"\d{8}_\d{6}", ts):
+        raise SystemExit(f"verify {ts}: not a <YYYYmmdd_HHMMSS> snapshot name")
+    if a.local_dir:
+        src = a.local_dir
+    elif os.path.isdir(a.ts) and os.sep in a.ts:
+        src = a.ts
+    else:
+        src = os.path.join(os.environ.get("X_BACKUP_ROOT", "/srv/X/backups"), ts)
+    src = os.path.abspath(src)
+    if not os.path.isdir(src):
+        raise SystemExit(f"verify {ts}: local dir {src} not found")
+    entries = sorted(os.listdir(src))
+    others = [n for n in entries if not os.path.isfile(os.path.join(src, n)) or os.path.islink(os.path.join(src, n))]
+    if others:  # upload only sends regular files; anything else would be lost
+        raise SystemExit(f"verify {ts}: local dir has non-regular entries {others}")
+    if "SHA256SUMS" not in entries:
+        raise SystemExit(f"verify {ts}: no local SHA256SUMS")
+    local = [(n, os.path.getsize(os.path.join(src, n)), md5_file(os.path.join(src, n))) for n in entries]
+    root = root_folder()
+    found = list_files(f"name='{q_escape(ts)}' and '{root}' in parents and mimeType='{FOLDER}' and trashed=false")
+    if not found:
+        raise SystemExit(f"verify {ts}: {ROOT_NAME}/{ts} not on Drive")
+    report = []
+    for folder in found:  # normally one; accept any folder that matches fully
+        problems = _verify_one(local, folder)
+        if not problems:
+            total = sum(s for _, s, _ in local)
+            log(f"verified {ROOT_NAME}/{ts}: {len(local)} files, {total}B, md5+size match, SHA256SUMS present")
+            return
+        report += [f"{folder['id']}: {p}" for p in problems]
+    for p in report:
+        log(f"  {p}")
+    raise SystemExit(f"verify {ts}: NOT verified ({len(report)} problem(s) in {len(found)} Drive folder(s))")
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -241,6 +298,8 @@ def main():
     s = sub.add_parser("prune"); s.add_argument("--days", type=int, default=90)
     s.add_argument("--dry-run", action="store_true"); s.set_defaults(fn=cmd_prune)
     s = sub.add_parser("latest"); s.set_defaults(fn=cmd_latest)
+    s = sub.add_parser("verify"); s.add_argument("ts", help="<TS> or a path to the local snapshot dir")
+    s.add_argument("--local-dir", help="local snapshot dir (default $X_BACKUP_ROOT/<TS>)"); s.set_defaults(fn=cmd_verify)
     s = sub.add_parser("download"); s.add_argument("ts"); s.add_argument("dest_dir"); s.set_defaults(fn=cmd_download)
     a = p.parse_args()
     a.fn(a)

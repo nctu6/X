@@ -13,7 +13,14 @@
 #   MANIFEST.txt, SHA256SUMS
 # Restore with scripts/restore.sh (see docs/RESTORE.md).
 # The installed copy is /usr/local/bin/x_backup.sh; scripts/backup.sh is the
-# versioned one. Snapshots stay in <repo>/backups/ (git-ignored).
+# versioned one. Snapshots are written to <repo>/backups/ (git-ignored).
+#
+# After a successful upload every local snapshot whose Drive copy verifies
+# (gdrive.py verify: same folder name, every file with the same md5 and size,
+# SHA256SUMS present) is deleted locally, since Drive holds it. Anything not
+# verified stays, and the LOCAL_KEEP_DAYS prune is the fallback.
+#   X_BACKUP_LOCAL_DRY_RUN=1   log the keep/delete decisions, delete nothing
+#   x_backup.sh prune-local    run only that step (no new snapshot, no upload)
 set -Eeuo pipefail
 umask 077
 
@@ -43,6 +50,15 @@ export X_GDRIVE_ROOT=${X_GDRIVE_ROOT:-X-backup}
 AGE_RECIPIENT_FILE=${X_AGE_PUB:-/srv/x-backup/age.pub}
 LOCAL_KEEP_DAYS=${X_BACKUP_LOCAL_KEEP_DAYS:-7}
 REMOTE_KEEP_DAYS=${X_BACKUP_REMOTE_KEEP_DAYS:-90}
+LOCAL_DRY_RUN=${X_BACKUP_LOCAL_DRY_RUN:-}
+MODE=${1:-backup}
+case "$MODE" in
+backup | prune-local) ;;
+*)
+    echo "usage: $0 [prune-local]" >&2
+    exit 2
+    ;;
+esac
 export PATH=/usr/local/bin:/usr/bin:/bin:$PATH
 
 mkdir -p "$BACKUP_ROOT"
@@ -57,6 +73,45 @@ TS=$(date +%Y%m%d_%H%M%S)
 DEST="$BACKUP_ROOT/$TS"
 log() { echo "[$(date '+%F %T %Z')] $*"; }
 trap 'log "FAILED (line $LINENO, exit $?)"' ERR
+
+# Delete local snapshots that are confirmed on Drive. A snapshot is removed
+# only when `gdrive.py verify` exits 0 for it; any failure keeps it.
+prune_uploaded() {
+    local d name kb freed=0 kept=0 deleted=0 tag=""
+    [ -n "$LOCAL_DRY_RUN" ] && tag=" [dry-run]"
+    log "local dedupe$tag: checking snapshots in $BACKUP_ROOT against gdrive:${X_GDRIVE_ROOT}"
+    if ! python3 "$GDRIVE" verify --help >/dev/null 2>&1; then
+        log "local dedupe: $GDRIVE has no verify command; keeping all local snapshots"
+        return 0
+    fi
+    for d in "$BACKUP_ROOT"/20*_*; do
+        name=${d##*/}
+        [[ $name =~ ^[0-9]{8}_[0-9]{6}$ ]] || continue
+        [ -d "$d" ] && [ ! -L "$d" ] || continue
+        kb=$(du -sk -- "$d" | cut -f1)
+        if python3 "$GDRIVE" verify "$name" --local-dir "$d"; then
+            freed=$((freed + kb))
+            deleted=$((deleted + 1))
+            if [ -n "$LOCAL_DRY_RUN" ]; then
+                log "local dedupe: would delete $name (${kb}K, verified on Drive)"
+            else
+                rm -rf -- "$d"
+                log "local dedupe: deleted $name (${kb}K, verified on Drive)"
+            fi
+        else
+            kept=$((kept + 1))
+            log "local dedupe: keep $name (${kb}K, not verified on Drive)"
+        fi
+    done
+    log "local dedupe$tag: $deleted $([ -n "$LOCAL_DRY_RUN" ] && echo "would be deleted" || echo deleted), $kept kept, $((freed / 1024))M freed"
+}
+
+if [ "$MODE" = prune-local ]; then
+    log "=== prune-local start ==="
+    prune_uploaded
+    log "=== prune-local done ==="
+    exit 0
+fi
 
 log "=== backup $TS start ==="
 for c in age python3 tar sha256sum; do
@@ -187,7 +242,9 @@ log "secrets encrypted: secrets.tar.gz.age (${SECRET_PATHS[*]:-<none>} crontab.t
 )
 log "local snapshot: $(du -sh "$DEST" | cut -f1) in $DEST"
 
-# Prune local snapshots older than LOCAL_KEEP_DAYS (default 7). The log stays.
+# Prune local snapshots older than LOCAL_KEEP_DAYS (default 7), whether or not
+# they reached Drive. This is the fallback for snapshots that never verified.
+# The log stays.
 find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -name '20*_*' -mtime +"$LOCAL_KEEP_DAYS" -print -exec rm -rf {} +
 
 if [ -n "${X_BACKUP_NO_UPLOAD:-}" ]; then
@@ -196,6 +253,8 @@ else
     python3 "$GDRIVE" upload "$DEST"
     log "uploaded to gdrive:${X_GDRIVE_ROOT}/$TS"
     python3 "$GDRIVE" prune --days "$REMOTE_KEEP_DAYS"
+    # Only reached when the upload succeeded (set -e stops the script above).
+    prune_uploaded
 fi
 
 log "=== backup $TS done ==="

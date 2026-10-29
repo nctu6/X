@@ -10,7 +10,7 @@
 | `MANIFEST.txt` | timestamp, host, repo path, git commit, file and post counts |
 | `SHA256SUMS` | checksums of the files above, uploaded last |
 
-Local snapshots are kept 7 days and Drive snapshots 90 days. Every upload is checked against the md5 that Drive reports. The log is `backups/backup.log` and holds no secret values.
+Every upload is checked against the md5 that Drive reports. After a successful upload, each local snapshot in `backups/` is checked with `gdrive.py verify <TS>` (a Drive folder with the same name, every local file present with the same md5 and size, and `SHA256SUMS` present) and deleted locally only when that passes. If the upload or the check fails, the local copy stays; local snapshots older than 7 days are removed regardless. Drive snapshots are kept 90 days. So normally the only copy is on Drive, and a restore downloads from there (`--from-dir backups/<TS>` works only for a snapshot that is still local). The log is `backups/backup.log`; it records each keep or delete and holds no secret values.
 
 The age private key is not on the server; keep copies off-host. Without it `secrets.tar.gz.age` cannot be opened, but the data and media archives are plain gzip.
 
@@ -25,7 +25,8 @@ The age private key is not on the server; keep copies off-host. Without it `secr
 | `X_AGE_PUB` | `/srv/x-backup/age.pub` |
 | `X_AGE_KEY` (restore) | `~/.config/x-backup/age.key` |
 | `X_BACKUP_LOCAL_KEEP_DAYS` / `X_BACKUP_REMOTE_KEEP_DAYS` | `7` / `90` |
-| `X_BACKUP_NO_UPLOAD` | set to skip Drive (local snapshot only) |
+| `X_BACKUP_NO_UPLOAD` | set to skip Drive (local snapshot only, nothing deleted) |
+| `X_BACKUP_LOCAL_DRY_RUN` | set to log the local keep/delete decisions without deleting |
 | `X_BACKUP_STDOUT` | set to also print the log |
 
 Cron (any daily hour; the example uses 03:00 in the host time zone):
@@ -34,7 +35,13 @@ Cron (any daily hour; the example uses 03:00 in the host time zone):
 0 3 * * * X_DIR=/srv/X /usr/local/bin/x_backup.sh
 ```
 
-Drive helper: `scripts/gdrive.py list | latest | download <TS> <dir> | prune --days N [--dry-run]`.
+Drive helper: `scripts/gdrive.py list | latest | verify <TS> [--local-dir DIR] | download <TS> <dir> | prune --days N [--dry-run]`. `verify` is read-only and exits 0 only when the Drive copy is complete.
+
+Run only the local dedupe step, without a new snapshot or upload (add `X_BACKUP_LOCAL_DRY_RUN=1` to see what it would delete):
+
+```
+X_DIR=/srv/X X_BACKUP_STDOUT=1 /usr/local/bin/x_backup.sh prune-local
+```
 
 ## Restore on a new host
 
