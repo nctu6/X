@@ -1,7 +1,7 @@
 //! On-demand X feed.
 //!
 //! Posts live in JSONL files. A tab view asks the X API for new posts only
-//! when that tab is opened, and at most once per six-hour slot. Handlers
+//! when that tab is opened, and at most once per local day. Handlers
 //! serve the saved posts from memory.
 
 #![forbid(unsafe_code)]

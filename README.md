@@ -1,6 +1,6 @@
 # X wire
 
-A small Rust service that shows recent posts from X, one tab per group of accounts. Posts are stored as JSONL and served from memory. The X API is called only when someone opens a tab, and at most once per account in each six-hour slot.
+A small Rust service that shows recent posts from X, one tab per group of accounts. Posts are stored as JSONL and served from memory. The X API is called only when someone opens a tab, and at most once per account each local day.
 
 The public site runs at the domain root, `https://x.0x6.ai/`.
 
@@ -86,7 +86,7 @@ If `X_BEARER_TOKEN` is set and not blank, it overrides the file. A blank or unse
 | `exclude_retweets` | `true` | Drop reposts. |
 | `api_base` | `https://api.x.com` | API origin. `http://` is allowed only for localhost. |
 | `data_dir` | `data` | Directory of `{handle}.jsonl` and `{handle}.state.json`. |
-| `timezone` | `Asia/Taipei` | IANA zone for the four daily slots and for displayed times. |
+| `timezone` | `Asia/Taipei` | IANA zone for the daily slot and for displayed times. |
 | `timezone_label` | unset | Text after displayed times, e.g. `Taiwan` gives `2026-10-09 10:46 Taiwan`. Unset shows the offset (`UTC+08:00`). The `<time datetime>` attribute and JSON stay UTC. |
 | `tabs` | required | Each tab has a `label` and a list of usernames. |
 | `footer` | unset | Optional credits in the page footer: `text` (linked to `url` when set), `links`, a list of `{ label, url }`, and `note`, a plain-text line such as a disclaimer (at most 300 characters). `url` must be `http://` or `https://`; each link may also be `mailto:` with one plain address (no `?`, spaces, or extra recipients). Web links open in a new tab; mail links do not. It renders as the text, then the links separated by ` · `. Without the block the page has no footer. See `config.example.yml`. |
@@ -95,7 +95,7 @@ Usernames may include a leading `@`. Labels become ids (`News` → `news`). A la
 
 ## Slots and storage
 
-Each local day is split into `00–06`, `06–12`, `12–18`, and `18–24` in `timezone`. The first request that opens a tab in a slot fetches that tab's accounts. Later requests in the same slot read the JSONL files. Concurrent requests for one account share a single in-flight call. A failed call does not consume the slot, so a later request may retry. The last successful time is stored next to the JSONL file, so a restart does not refetch.
+Each local day (00:00–24:00 in `timezone`) is one slot. The first request that opens a tab in a slot fetches that tab's accounts. Later requests in the same slot read the JSONL files. Concurrent requests for one account share a single in-flight call. A failed call does not consume the slot, so a later request may retry. The last successful time is stored next to the JSONL file, so a restart does not refetch.
 
 User lookup is cached and is not the slot's successful call. New posts are requested with `since_id` set to the newest stored id. There is no background polling: an account is updated only when its tab is opened, or when `xfeed update` is run. The home page always checks the first tab. If the URL hash names another tab, the browser then requests that tab as well.
 

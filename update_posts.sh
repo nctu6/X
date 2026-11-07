@@ -1,6 +1,6 @@
 #!/bin/sh
 # Refresh posts from the console, including image downloads.
-# This bypasses the four-slot daily limit.
+# This bypasses the once-per-day limit.
 # Arguments are passed to `xfeed update` (for example `--tab News`).
 set -eu
 cd "$(dirname "$0")"

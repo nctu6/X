@@ -13,7 +13,7 @@ listen: "0.0.0.0:8181"
 # e.g. https://x.0x6.ai/. Use a prefix such as "/x" to mount it under a path.
 base_path: "/"
 
-# Browser cache lifetime. 0 sends `private, no-cache` so a new six-hour
+# Browser cache lifetime. 0 sends `private, no-cache` so a new daily
 # slot is noticed. Responses still include an ETag.
 cache_max_age_secs: 0
 
@@ -37,7 +37,7 @@ api_base: "https://api.x.com"
 data_dir: "data"
 
 # Slot boundaries use this IANA time zone.
-# A day is 00–06, 06–12, 12–18, and 18–24. Each account is fetched at most
+# Each local day (00:00–24:00) is one slot. Each account is fetched at most
 # once per slot, and only when its tab is opened.
 timezone: "Asia/Taipei"
 

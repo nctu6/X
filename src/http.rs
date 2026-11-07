@@ -596,7 +596,7 @@ mod tests {
         assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
         assert_eq!(calls.load(Ordering::SeqCst), 2);
 
-        clock.set(1_700_000_000 + 6 * 3600);
+        clock.set(1_700_000_000 + 24 * 3600);
         let next = call(service.clone(), "/x/", None, Some(&etag)).await;
         assert_eq!(next.status(), StatusCode::OK);
         assert_eq!(calls.load(Ordering::SeqCst), 3);

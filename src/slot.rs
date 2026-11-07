@@ -1,10 +1,9 @@
-//! Four six-hour slots in a configured time zone.
+//! One slot per local day in a configured time zone.
 //!
-//! A local day is `00–06`, `06–12`, `12–18`, and `18–24`. The same slot on
-//! another date is a different slot, so each account can succeed once per
-//! window.
+//! A slot runs from 00:00 to 24:00 local time. Each date is a different
+//! slot, so each account can succeed once per day.
 
-use chrono::{DateTime, Datelike, Timelike, Utc};
+use chrono::{DateTime, Datelike, Utc};
 use chrono_tz::Tz;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12,8 +11,6 @@ pub struct Slot {
     pub year: i32,
     pub month: u32,
     pub day: u32,
-    /// `0` is 00:00–06:00, then `1`, `2`, and `3`.
-    pub index: u8,
 }
 
 pub fn parse_timezone(name: &str) -> Result<Tz, String> {
@@ -28,7 +25,6 @@ pub fn slot_at(unix: i64, tz: Tz) -> Option<Slot> {
         year: local.year(),
         month: local.month(),
         day: local.day(),
-        index: (local.hour() / 6) as u8,
     })
 }
 
@@ -51,31 +47,24 @@ mod tests {
     }
 
     #[test]
-    fn taipei_slots_follow_six_hour_edges() {
+    fn taipei_slots_follow_local_days() {
         let tz = parse_timezone("Asia/Taipei").unwrap();
         let day = |hour, minute| at(tz, 2026, 10, 9, hour, minute);
-        assert_eq!(slot_at(day(0, 0), tz).unwrap().index, 0);
-        assert_eq!(slot_at(day(5, 59), tz).unwrap().index, 0);
-        assert_eq!(slot_at(day(6, 0), tz).unwrap().index, 1);
-        assert_eq!(slot_at(day(11, 59), tz).unwrap().index, 1);
-        assert_eq!(slot_at(day(12, 0), tz).unwrap().index, 2);
-        assert_eq!(slot_at(day(17, 59), tz).unwrap().index, 2);
-        assert_eq!(slot_at(day(18, 0), tz).unwrap().index, 3);
-        assert_eq!(slot_at(day(23, 59), tz).unwrap().index, 3);
-        assert!(same_slot(day(1, 0), day(5, 0), tz));
-        assert!(!same_slot(day(5, 59), day(6, 0), tz));
+        assert!(same_slot(day(0, 0), day(23, 59), tz));
+        assert!(same_slot(day(5, 59), day(6, 0), tz));
+        assert!(same_slot(day(11, 59), day(18, 0), tz));
+        assert!(!same_slot(day(23, 59), at(tz, 2026, 10, 10, 0, 0), tz));
         assert!(!same_slot(day(23, 0), at(tz, 2026, 10, 10, 1, 0), tz));
     }
 
     #[test]
     fn utc_slots_are_independent_of_the_default_zone() {
         let tz = parse_timezone("UTC").unwrap();
-        assert_eq!(slot_at(at(tz, 2026, 1, 2, 5, 0), tz).unwrap().index, 0);
-        assert_eq!(slot_at(at(tz, 2026, 1, 2, 6, 0), tz).unwrap().index, 1);
+        assert!(same_slot(at(tz, 2026, 1, 2, 5, 0), at(tz, 2026, 1, 2, 6, 0), tz));
         let taipei = parse_timezone("Asia/Taipei").unwrap();
         // 2026-01-02 00:30 in Taipei is still 2026-01-01 in UTC.
         let instant = at(taipei, 2026, 1, 2, 0, 30);
-        assert_eq!(slot_at(instant, taipei).unwrap().index, 0);
+        assert_eq!(slot_at(instant, taipei).unwrap().day, 2);
         assert_eq!(slot_at(instant, tz).unwrap().day, 1);
     }
 }

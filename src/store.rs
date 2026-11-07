@@ -933,7 +933,16 @@ mod tests {
             .any(|path| path.contains("/2/users/1/tweets")));
 
         let afternoon = chrono_tz::Asia::Taipei
-            .with_ymd_and_hms(2026, 10, 9, 7, 0, 0)
+            .with_ymd_and_hms(2026, 10, 9, 23, 59, 0)
+            .unwrap()
+            .timestamp();
+        assert!(same_slot(morning, afternoon, tz));
+        clock.set(afternoon);
+        store.prepare_tab("news", false).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), tech_before + 1);
+
+        let afternoon = chrono_tz::Asia::Taipei
+            .with_ymd_and_hms(2026, 10, 10, 7, 0, 0)
             .unwrap()
             .timestamp();
         assert!(!same_slot(morning, afternoon, tz));
