@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Minimal Google Drive v3 client for xfeed (X) backups (stdlib only, no rclone).
 
-Credentials: JSON file (default /srv/x-backup/gdrive.json, mode 600)
+Credentials: JSON file (default $X_BACKUP_CONF/gdrive.json, i.e.
+  ~/.config/x-backup/gdrive.json, mode 600)
   {"client_id": "...", "client_secret": "...", "refresh_token": "..."}
 Scope is drive.file: only files/folders created by this OAuth client are visible.
 The OAuth client may be shared with other tools; this one uses its own Drive root folder.
@@ -14,14 +15,16 @@ Usage:
   gdrive.py latest                        # print the newest complete <TS> (has SHA256SUMS)
   gdrive.py verify <TS> [--local-dir DIR] # exit 0 only if X-backup/<TS>/ holds every local
                                           # file with the same md5 and size, and SHA256SUMS
-Env: X_GDRIVE_CREDS (creds path), X_GDRIVE_ROOT
-     (folder name, default X-backup), X_BACKUP_ROOT (verify's default parent of
-     <TS>, default /srv/X/backups)
+Env: X_GDRIVE_CREDS (creds path), X_BACKUP_CONF (default config dir),
+     X_GDRIVE_ROOT (folder name, default X-backup), X_BACKUP_ROOT (verify's
+     parent of <TS> when --local-dir is not given)
 """
 import argparse, datetime as dt, hashlib, json, os, re, sys, time
 import urllib.error, urllib.parse, urllib.request
 
-CREDS = os.environ.get("X_GDRIVE_CREDS", "/srv/x-backup/gdrive.json")
+CONF_DIR = os.environ.get("X_BACKUP_CONF") or os.path.join(
+    os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "x-backup")
+CREDS = os.environ.get("X_GDRIVE_CREDS", os.path.join(CONF_DIR, "gdrive.json"))
 ROOT_NAME = os.environ.get("X_GDRIVE_ROOT", "X-backup")
 API = "https://www.googleapis.com/drive/v3"
 UPLOAD = "https://www.googleapis.com/upload/drive/v3/files"
@@ -262,7 +265,10 @@ def cmd_verify(a):
     elif os.path.isdir(a.ts) and os.sep in a.ts:
         src = a.ts
     else:
-        src = os.path.join(os.environ.get("X_BACKUP_ROOT", "/srv/X/backups"), ts)
+        root = os.environ.get("X_BACKUP_ROOT")
+        if not root:
+            raise SystemExit(f"verify {ts}: pass --local-dir or set X_BACKUP_ROOT")
+        src = os.path.join(root, ts)
     src = os.path.abspath(src)
     if not os.path.isdir(src):
         raise SystemExit(f"verify {ts}: local dir {src} not found")

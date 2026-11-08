@@ -18,12 +18,14 @@ The age private key is not on the server; keep copies off-host. Without it `secr
 
 | Variable | Default |
 | --- | --- |
-| `X_DIR` | the repo that contains the script, else `/srv/X` |
+| `X_DIR` | the repo that contains the script; required for the installed copy |
 | `X_BACKUP_ROOT` | `$X_DIR/backups` |
-| `X_GDRIVE_CREDS` | `/srv/x-backup/gdrive.json` (may be shared with other backup jobs) |
+| `X_BACKUP_CONF` | `~/.config/x-backup` (Drive credentials and age keys) |
+| `X_BACKUP_BIN` | `~/bin` (installed `x_backup.sh` and `x_gdrive.py`) |
+| `X_GDRIVE_CREDS` | `$X_BACKUP_CONF/gdrive.json` (may be shared with other backup jobs) |
 | `X_GDRIVE_ROOT` | `X-backup` |
-| `X_AGE_PUB` | `/srv/x-backup/age.pub` |
-| `X_AGE_KEY` (restore) | `~/.config/x-backup/age.key` |
+| `X_AGE_PUB` | `$X_BACKUP_CONF/age.pub` |
+| `X_AGE_KEY` (restore) | `$X_BACKUP_CONF/age.key` |
 | `X_BACKUP_LOCAL_KEEP_DAYS` / `X_BACKUP_REMOTE_KEEP_DAYS` | `7` / `90` |
 | `X_BACKUP_NO_UPLOAD` | set to skip Drive (local snapshot only, nothing deleted) |
 | `X_BACKUP_LOCAL_DRY_RUN` | set to log the local keep/delete decisions without deleting |
@@ -32,7 +34,7 @@ The age private key is not on the server; keep copies off-host. Without it `secr
 Cron (any daily hour; the example uses 03:00 in the host time zone):
 
 ```
-0 3 * * * X_DIR=/srv/X /usr/local/bin/x_backup.sh
+0 3 * * * X_DIR=<repo> ~/bin/x_backup.sh
 ```
 
 Drive helper: `scripts/gdrive.py list | latest | verify <TS> [--local-dir DIR] | download <TS> <dir> | prune --days N [--dry-run]`. `verify` is read-only and exits 0 only when the Drive copy is complete.
@@ -40,26 +42,26 @@ Drive helper: `scripts/gdrive.py list | latest | verify <TS> [--local-dir DIR] |
 Run only the local dedupe step, without a new snapshot or upload (add `X_BACKUP_LOCAL_DRY_RUN=1` to see what it would delete):
 
 ```
-X_DIR=/srv/X X_BACKUP_STDOUT=1 /usr/local/bin/x_backup.sh prune-local
+X_DIR=<repo> X_BACKUP_STDOUT=1 ~/bin/x_backup.sh prune-local
 ```
 
 ## Restore on a new host
 
 ```bash
 apt-get install -y age python3
-git clone git@github.com:nctu6/X.git /srv/X
-cd /srv/X
-mkdir -p /srv/x-backup
+git clone https://github.com/nctu6/X.git <repo>
+cd <repo>
+mkdir -p ~/.config/x-backup
 # copy the age private key from its off-host copy (mode 600):
-#   scp <key> root@<host>:/srv/x-backup/age.key
+#   scp <key> <user>@<host>:.config/x-backup/age.key
 ```
 
 Then **one** of:
 
 ```bash
 # a) no gdrive.json yet: in the browser open folder "X-backup", download only <newest TS>/secrets.tar.gz.age
-scripts/restore.sh --secrets /tmp/secrets.tar.gz.age --install-cron
-# b) gdrive.json already in /srv/x-backup/
+scripts/restore.sh --secrets ~/secrets.tar.gz.age --install-cron
+# b) gdrive.json already in ~/.config/x-backup/
 scripts/restore.sh --install-cron
 # c) a backup folder you already have (Drive download, or backups/<TS> on the old disk)
 scripts/restore.sh --from-dir /path/to/<TS> --install-cron
@@ -71,7 +73,7 @@ scripts/restore.sh --from-dir /path/to/<TS> --install-cron
 2. decrypts `secrets.tar.gz.age` in a private temp dir that is deleted on exit;
 3. refuses if `data/` or `config.yml` already exist, unless `--force` (moved to `.restore_replaced_<time>/`, never deleted);
 4. extracts `data.tar.gz` and `media.tar.gz`, installs `config.yml` mode 600, and writes `.restore_state`;
-5. with `--install-cron` (root): installs `/usr/local/bin/x_backup.sh` and `/usr/local/bin/x_gdrive.py`, copies `gdrive.json` and `age.pub` only when missing, and appends the cron line when it is not there;
+5. with `--install-cron`: installs `~/bin/x_backup.sh` and `~/bin/x_gdrive.py`, copies `gdrive.json` and `age.pub` only when missing, and appends the cron line when it is not there;
 6. prints the next steps. Re-running for the same timestamp skips the data step.
 
 Other flags: `--target DIR`, `--creds FILE`, `--age-key FILE`, `--keep-secrets DIR` (keep the decrypted tree; delete it afterwards). See `scripts/restore.sh --help`.

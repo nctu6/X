@@ -12,7 +12,7 @@
 #                        public key only)
 #   MANIFEST.txt, SHA256SUMS
 # Restore with scripts/restore.sh (see docs/RESTORE.md).
-# The installed copy is /usr/local/bin/x_backup.sh; scripts/backup.sh is the
+# The installed copy is $X_BACKUP_BIN/x_backup.sh; scripts/backup.sh is the
 # versioned one. Snapshots are written to <repo>/backups/ (git-ignored).
 #
 # After a successful upload every local snapshot whose Drive copy verifies
@@ -24,30 +24,34 @@
 set -Eeuo pipefail
 umask 077
 
-# X_DIR: the repo this script sits in (scripts/backup.sh), else the deployed
-# checkout (the installed copy lives in /usr/local/bin).
+# X_DIR: the repo this script sits in (scripts/backup.sh). The installed copy
+# (in $X_BACKUP_BIN) has no repo next to it, so cron must set X_DIR.
 SCRIPT_REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 if [ -z "${X_DIR:-}" ]; then
     if [ -f "$SCRIPT_REPO/Cargo.toml" ]; then
         X_DIR=$SCRIPT_REPO
     else
-        X_DIR=/srv/X
+        echo "backup: set X_DIR to the xfeed checkout" >&2
+        exit 2
     fi
 fi
 BACKUP_ROOT=${X_BACKUP_ROOT:-$X_DIR/backups}
+# Credentials and the age public key; installed scripts.
+CONF_DIR=${X_BACKUP_CONF:-${XDG_CONFIG_HOME:-$HOME/.config}/x-backup}
+BIN_DIR=${X_BACKUP_BIN:-$HOME/bin}
 LOG="$BACKUP_ROOT/backup.log"
 if [ -z "${X_GDRIVE:-}" ]; then
-    if [ -f /usr/local/bin/x_gdrive.py ]; then
-        GDRIVE=/usr/local/bin/x_gdrive.py
+    if [ -f "$BIN_DIR/x_gdrive.py" ]; then
+        GDRIVE=$BIN_DIR/x_gdrive.py
     else
         GDRIVE=$SCRIPT_REPO/scripts/gdrive.py
     fi
 else
     GDRIVE=$X_GDRIVE
 fi
-export X_GDRIVE_CREDS=${X_GDRIVE_CREDS:-/srv/x-backup/gdrive.json}
+export X_GDRIVE_CREDS=${X_GDRIVE_CREDS:-$CONF_DIR/gdrive.json}
 export X_GDRIVE_ROOT=${X_GDRIVE_ROOT:-X-backup}
-AGE_RECIPIENT_FILE=${X_AGE_PUB:-/srv/x-backup/age.pub}
+AGE_RECIPIENT_FILE=${X_AGE_PUB:-$CONF_DIR/age.pub}
 LOCAL_KEEP_DAYS=${X_BACKUP_LOCAL_KEEP_DAYS:-7}
 REMOTE_KEEP_DAYS=${X_BACKUP_REMOTE_KEEP_DAYS:-90}
 LOCAL_DRY_RUN=${X_BACKUP_LOCAL_DRY_RUN:-}
@@ -215,8 +219,8 @@ add_secret "$X_DIR/config.yml"
 add_secret "$X_GDRIVE_CREDS"
 add_secret "$GDRIVE"
 add_secret "$AGE_RECIPIENT_FILE"
-add_secret /usr/local/bin/x_backup.sh
-add_secret /usr/local/bin/x_gdrive.py
+add_secret "$BIN_DIR/x_backup.sh"
+add_secret "$BIN_DIR/x_gdrive.py"
 # tar from / so the archive keeps absolute-relative paths, plus crontab.txt.
 tar -czf - -C / "${SECRET_PATHS[@]}" -C "$SECRETS_TMP" crontab.txt |
     age -R "$AGE_RECIPIENT_FILE" -o "$DEST/secrets.tar.gz.age"

@@ -8,11 +8,11 @@
 #   --secrets FILE      secrets.tar.gz.age downloaded by hand (bootstrap when there
 #                       is no gdrive.json yet: the Drive credentials are inside it)
 #   --creds FILE        Drive credentials gdrive.json
-#                       (default: $X_GDRIVE_CREDS or /srv/x-backup/gdrive.json)
-#   --age-key FILE      age private key (default: $X_AGE_KEY or ~/.config/x-backup/age.key)
+#                       (default: $X_GDRIVE_CREDS or $X_BACKUP_CONF/gdrive.json)
+#   --age-key FILE      age private key (default: $X_AGE_KEY or $X_BACKUP_CONF/age.key)
 #   --target DIR        repo to restore into (default: the repo this script is in)
 #   --force             replace existing data (moved to <target>/.restore_replaced_<time>/, not deleted)
-#   --install-cron      (root) install /usr/local/bin/x_backup.sh + x_gdrive.py, Drive creds,
+#   --install-cron      install $X_BACKUP_BIN/x_backup.sh + x_gdrive.py, Drive creds,
 #                       age public key, and the daily cron line for this repo
 #   --keep-secrets DIR  keep the decrypted secrets tree in DIR
 #   -h, --help
@@ -30,8 +30,11 @@ first_named() { # <root> <filename>
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 TARGET=$(cd "$SCRIPT_DIR/.." && pwd)
 TS="" FROM_DIR="" SECRETS_FILE="" FORCE=0 INSTALL_CRON=0 KEEP_SECRETS=""
-CREDS=${X_GDRIVE_CREDS:-/srv/x-backup/gdrive.json}
-AGE_KEY=${X_AGE_KEY:-$HOME/.config/x-backup/age.key}
+# X_BACKUP_CONF defaults to ~/.config/x-backup; X_BACKUP_BIN to ~/bin.
+CONF_DIR=${X_BACKUP_CONF:-${XDG_CONFIG_HOME:-$HOME/.config}/x-backup}
+BIN_DIR=${X_BACKUP_BIN:-$HOME/bin}
+CREDS=${X_GDRIVE_CREDS:-$CONF_DIR/gdrive.json}
+AGE_KEY=${X_AGE_KEY:-$CONF_DIR/age.key}
 export X_GDRIVE_ROOT=${X_GDRIVE_ROOT:-X-backup}
 
 while [ $# -gt 0 ]; do
@@ -115,7 +118,7 @@ say "SHA256SUMS ok ($(wc -l <"$BK/SHA256SUMS" | tr -d ' ') files)"
 [ -f "$BK/secrets.tar.gz.age" ] || die "$BK has no secrets.tar.gz.age"
 decrypt_secrets "$BK/secrets.tar.gz.age"
 
-REL=srv/X
+REL=""
 if [ -f "$BK/MANIFEST.txt" ]; then
     p=$(sed -n 's/^dir=//p' "$BK/MANIFEST.txt")
     if [ -n "$p" ]; then
@@ -123,7 +126,7 @@ if [ -f "$BK/MANIFEST.txt" ]; then
     fi
 fi
 S_CONFIG="$WORK/secrets/$REL/config.yml"
-if [ ! -f "$S_CONFIG" ]; then
+if [ -z "$REL" ] || [ ! -f "$S_CONFIG" ]; then
     S_CONFIG=$(first_named "$WORK/secrets" config.yml)
 fi
 
@@ -173,25 +176,24 @@ else
 fi
 
 if [ "$INSTALL_CRON" -eq 1 ]; then
-    [ "$(id -u)" -eq 0 ] || die "--install-cron needs root"
-    install -d -m 700 /usr/local/bin /srv/x-backup
-    install -m 700 "$TARGET/scripts/backup.sh" /usr/local/bin/x_backup.sh
-    install -m 700 "$TARGET/scripts/gdrive.py" /usr/local/bin/x_gdrive.py
+    install -d -m 700 "$BIN_DIR" "$CONF_DIR"
+    install -m 700 "$TARGET/scripts/backup.sh" "$BIN_DIR/x_backup.sh"
+    install -m 700 "$TARGET/scripts/gdrive.py" "$BIN_DIR/x_gdrive.py"
     S_CREDS=$(first_named "$WORK/secrets" gdrive.json)
     S_PUB=$(first_named "$WORK/secrets" age.pub)
-    if [ ! -f /srv/x-backup/gdrive.json ]; then
+    if [ ! -f "$CONF_DIR/gdrive.json" ]; then
         if [ -z "$S_CREDS" ] || [ ! -f "$S_CREDS" ]; then
             die "no gdrive.json in the secrets archive"
         fi
-        install -m 600 "$S_CREDS" /srv/x-backup/gdrive.json
+        install -m 600 "$S_CREDS" "$CONF_DIR/gdrive.json"
     fi
-    if [ ! -f /srv/x-backup/age.pub ]; then
+    if [ ! -f "$CONF_DIR/age.pub" ]; then
         if [ -z "$S_PUB" ] || [ ! -f "$S_PUB" ]; then
             die "no age.pub in the secrets archive"
         fi
-        install -m 600 "$S_PUB" /srv/x-backup/age.pub
+        install -m 600 "$S_PUB" "$CONF_DIR/age.pub"
     fi
-    LINE="0 3 * * * X_DIR=$TARGET /usr/local/bin/x_backup.sh"
+    LINE="0 3 * * * X_DIR=$TARGET $BIN_DIR/x_backup.sh"
     if crontab -l 2>/dev/null | grep -q 'x_backup\.sh'; then
         say "cron already has an x_backup.sh line; left unchanged"
     else
@@ -214,7 +216,7 @@ Next steps:
   1. Build and start xfeed (port from config.yml, default 8181):
        cd $TARGET && XFEED_BUILD=1 scripts/run.sh     # in tmux, not systemd
        curl -fsS http://127.0.0.1:8181/health
-  2. Daily backup (root): re-run with --install-cron, then run /usr/local/bin/x_backup.sh once.
-       0 3 * * * X_DIR=$TARGET /usr/local/bin/x_backup.sh
+  2. Daily backup: re-run with --install-cron, then run $BIN_DIR/x_backup.sh once.
+       0 3 * * * X_DIR=$TARGET $BIN_DIR/x_backup.sh
      The hour is in the host time zone. Log: $TARGET/backups/backup.log
 NEXT
