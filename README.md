@@ -86,16 +86,16 @@ If `X_BEARER_TOKEN` is set and not blank, it overrides the file. A blank or unse
 | `exclude_retweets` | `true` | Drop reposts. |
 | `api_base` | `https://api.x.com` | API origin. `http://` is allowed only for localhost. |
 | `data_dir` | `data` | Directory of `{handle}.jsonl` and `{handle}.state.json`. |
-| `timezone` | `Asia/Taipei` | IANA zone for the daily slot and for displayed times. |
+| `timezone` | `Asia/Taipei` | IANA zone for slot boundaries and for displayed times. |
 | `timezone_label` | unset | Text after displayed times, e.g. `Taiwan` gives `2026-10-09 10:46 Taiwan`. Unset shows the offset (`UTC+08:00`). The `<time datetime>` attribute and JSON stay UTC. |
-| `tabs` | required | Each tab has a `label` and a list of usernames. |
+| `tabs` | required | Each tab has a `label`, a list of usernames, and an optional `refresh_hours` (default `24`, must divide 24) that sets how long its slot is. |
 | `footer` | unset | Optional credits in the page footer: `text` (linked to `url` when set), `links`, a list of `{ label, url }`, and `note`, a plain-text line such as a disclaimer (at most 300 characters). `url` must be `http://` or `https://`; each link may also be `mailto:` with one plain address (no `?`, spaces, or extra recipients). Web links open in a new tab; mail links do not. It renders as the text, then the links separated by ` · `. Without the block the page has no footer. See `config.example.yml`. |
 
 Usernames may include a leading `@`. Labels become ids (`News` → `news`). A label that does not yield an ASCII slug becomes `tab-1`, `tab-2`, and so on.
 
 ## Slots and storage
 
-Each local day (00:00–24:00 in `timezone`) is one slot. The first request that opens a tab in a slot fetches that tab's accounts. Later requests in the same slot read the JSONL files. Concurrent requests for one account share a single in-flight call. A failed call does not consume the slot, so a later request may retry. The last successful time is stored next to the JSONL file, so a restart does not refetch.
+By default each local day (00:00–24:00 in `timezone`) is one slot. A tab can set `refresh_hours` (1, 2, 3, 4, 6, 8, 12 or 24) to split the day into shorter slots starting at 00:00; for example `refresh_hours: 6` on News gives 00–06, 06–12, 12–18 and 18–24. An account shared by two tabs follows the slot of whichever tab is opened. The first request that opens a tab in a slot fetches that tab's accounts. Later requests in the same slot read the JSONL files. Concurrent requests for one account share a single in-flight call. A failed call does not consume the slot, so a later request may retry. The last successful time is stored next to the JSONL file, so a restart does not refetch.
 
 User lookup is cached and is not the slot's successful call. New posts are requested with `since_id` set to the newest stored id. There is no background polling: an account is updated only when its tab is opened, or when `xfeed update` is run. The home page always checks the first tab. If the URL hash names another tab, the browser then requests that tab as well.
 
@@ -202,7 +202,7 @@ Tests parse `config.example.yml` (never the real `config.yml`), check slot bound
 
 ## Layout
 
-`xfeed` is one crate. `main` serves HTTP or runs `update`. `store` owns the JSONL files, the in-memory posts, and the once-per-slot gate. `images` downloads media and serves the prune walk. `slot` maps a timestamp onto the four local windows. `render` builds the home page, a tab fragment, JSON, gzip, and brotli. `http` selects the encoding, compares the ETag after the slot check, and serves saved images. `xapi` calls the X API v2 and parses posts. `pageviews` keeps the daily view totals for `/popularity.json`.
+`xfeed` is one crate. `main` serves HTTP or runs `update`. `store` owns the JSONL files, the in-memory posts, and the once-per-slot gate. `images` downloads media and serves the prune walk. `slot` maps a timestamp onto a tab's local refresh window. `render` builds the home page, a tab fragment, JSON, gzip, and brotli. `http` selects the encoding, compares the ETag after the slot check, and serves saved images. `xapi` calls the X API v2 and parses posts. `pageviews` keeps the daily view totals for `/popularity.json`.
 
 ## License
 
