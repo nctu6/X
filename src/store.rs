@@ -16,7 +16,7 @@ use tokio::sync::{watch, Mutex};
 use crate::config::{Config, Tab};
 use crate::images::{cache_images, ImageClient, ImageSource};
 use crate::model::{is_snowflake, Media, Post, User};
-use crate::slot::{parse_timezone, same_slot};
+use crate::slot::{parse_timezone, same_slot, DEFAULT_REFRESH_HOURS};
 use crate::xapi::{
     parse_user_tweets, parse_users, requested_posts, short_error, tweets_path, users_path, XSource,
 };
@@ -207,14 +207,15 @@ impl<S: XSource + 'static, I: ImageSource + 'static> Store<S, I> {
         })
     }
 
-    /// Load one tab, fetching each account only when this slot has no success yet.
+    /// Load one tab, fetching each account only when the tab's current slot
+    /// (`refresh_hours` long) has no success yet.
     pub async fn prepare_tab(&self, name: &str, force: bool) -> Result<TabView, PrepareError> {
         let Some(tab) = self.tab(name).cloned() else {
             return Err(PrepareError::UnknownTab);
         };
         let mut notes = Vec::new();
         for handle in &tab.accounts {
-            if let Err(err) = self.ensure(handle, force).await {
+            if let Err(err) = self.ensure(handle, force, tab.refresh_hours).await {
                 notes.push(format!("@{handle}: {err}"));
             }
         }
@@ -260,7 +261,10 @@ impl<S: XSource + 'static, I: ImageSource + 'static> Store<S, I> {
         let handles = self.handles_for(target)?;
         let mut reports = Vec::new();
         for handle in handles {
-            let error = self.ensure(&handle, true).await.err();
+            let error = self
+                .ensure(&handle, true, DEFAULT_REFRESH_HOURS)
+                .await
+                .err();
             let stored = {
                 let guard = self.inner.accounts.lock().await;
                 guard
@@ -306,10 +310,10 @@ impl<S: XSource + 'static, I: ImageSource + 'static> Store<S, I> {
         }
     }
 
-    async fn ensure(&self, handle: &str, force: bool) -> Result<(), String> {
+    async fn ensure(&self, handle: &str, force: bool, hours: u32) -> Result<(), String> {
         let key = handle.to_ascii_lowercase();
         let now = self.inner.clock.now();
-        if !force && self.account_fresh(&key, now).await {
+        if !force && self.account_fresh(&key, now, hours).await {
             return Ok(());
         }
 
@@ -351,7 +355,7 @@ impl<S: XSource + 'static, I: ImageSource + 'static> Store<S, I> {
             sender: Some(sender),
         };
         // Another caller may have finished between the fresh check and leadership.
-        if !force && self.account_fresh(&key, now).await {
+        if !force && self.account_fresh(&key, now, hours).await {
             if let Some(sender) = leader.sender.take() {
                 let _ = sender.send(Notice {
                     done: true,
@@ -370,12 +374,12 @@ impl<S: XSource + 'static, I: ImageSource + 'static> Store<S, I> {
         result
     }
 
-    async fn account_fresh(&self, key: &str, now: i64) -> bool {
+    async fn account_fresh(&self, key: &str, now: i64, hours: u32) -> bool {
         let guard = self.inner.accounts.lock().await;
         guard
             .get(key)
             .and_then(|account| account.last_success)
-            .is_some_and(|stamp| same_slot(stamp, now, self.inner.tz))
+            .is_some_and(|stamp| same_slot(stamp, now, self.inner.tz, hours))
     }
 
     async fn fetch_account(&self, key: &str) -> Result<(), String> {
@@ -936,7 +940,7 @@ mod tests {
             .with_ymd_and_hms(2026, 10, 9, 23, 59, 0)
             .unwrap()
             .timestamp();
-        assert!(same_slot(morning, afternoon, tz));
+        assert!(same_slot(morning, afternoon, tz, 24));
         clock.set(afternoon);
         store.prepare_tab("news", false).await.unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), tech_before + 1);
@@ -945,7 +949,7 @@ mod tests {
             .with_ymd_and_hms(2026, 10, 10, 7, 0, 0)
             .unwrap()
             .timestamp();
-        assert!(!same_slot(morning, afternoon, tz));
+        assert!(!same_slot(morning, afternoon, tz, 24));
         clock.set(afternoon);
         store.prepare_tab("news", false).await.unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), tech_before + 2);
@@ -1001,6 +1005,68 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         store.prepare_tab("news", false).await.unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn each_tab_uses_its_own_refresh_hours() {
+        let dir = temp_dir("refresh-hours");
+        let mock = Mock::new(0);
+        let calls = Arc::clone(&mock.calls);
+        let paths = Arc::clone(&mock.paths);
+        let clock = Clock::system();
+        let at = |day, hour, minute| {
+            chrono_tz::Asia::Taipei
+                .with_ymd_and_hms(2026, 10, day, hour, minute, 0)
+                .unwrap()
+                .timestamp()
+        };
+        let config = Config::from_yaml(&format!(
+            "data_dir: \"{}\"\nposts_per_tab: 10\nmax_stored_posts: 10\ntabs:\n  - label: News\n    refresh_hours: 6\n    accounts: [alice]\n  - label: Tech\n    accounts: [bob]\n",
+            dir.display()
+        ))
+        .unwrap();
+        assert_eq!(config.tabs[0].refresh_hours, 6);
+        assert_eq!(config.tabs[1].refresh_hours, 24);
+        clock.set(at(9, 1, 0));
+        let store = Store::open_with_clock(config, mock, IgnoreImages, clock.clone())
+            .await
+            .unwrap();
+        let tweets = |id: &str| {
+            paths
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|path| path.contains(&format!("/2/users/{id}/tweets")))
+                .count()
+        };
+
+        store.prepare_tab("news", false).await.unwrap();
+        store.prepare_tab("tech", false).await.unwrap();
+        assert_eq!((tweets("2"), tweets("1")), (1, 1));
+
+        // Same 6-hour window: neither tab calls X.
+        clock.set(at(9, 5, 59));
+        store.prepare_tab("news", false).await.unwrap();
+        store.prepare_tab("tech", false).await.unwrap();
+        assert_eq!((tweets("2"), tweets("1")), (1, 1));
+
+        // Next 6-hour window: News refreshes, Tech waits for the next day.
+        clock.set(at(9, 6, 0));
+        store.prepare_tab("news", false).await.unwrap();
+        store.prepare_tab("tech", false).await.unwrap();
+        assert_eq!((tweets("2"), tweets("1")), (2, 1));
+
+        clock.set(at(9, 23, 59));
+        store.prepare_tab("news", false).await.unwrap();
+        store.prepare_tab("tech", false).await.unwrap();
+        assert_eq!((tweets("2"), tweets("1")), (3, 1));
+
+        clock.set(at(10, 0, 0));
+        store.prepare_tab("news", false).await.unwrap();
+        store.prepare_tab("tech", false).await.unwrap();
+        assert_eq!((tweets("2"), tweets("1")), (4, 2));
+        assert!(calls.load(Ordering::SeqCst) >= 6);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -9,6 +9,8 @@ use std::path::Path;
 
 use serde::Deserialize;
 
+use crate::slot::{valid_refresh_hours, DEFAULT_REFRESH_HOURS};
+
 const API_DEFAULT: &str = "https://api.x.com";
 
 #[derive(Clone, PartialEq, Eq)]
@@ -76,6 +78,9 @@ pub struct Tab {
     pub id: String,
     pub label: String,
     pub accounts: Vec<String>,
+    /// Slot length in hours (divides 24). Opening the tab fetches each
+    /// account at most once per slot of this length.
+    pub refresh_hours: u32,
 }
 
 #[derive(Debug)]
@@ -205,6 +210,8 @@ struct RawFooterLink {
 struct RawTab {
     label: String,
     accounts: Vec<String>,
+    #[serde(default)]
+    refresh_hours: Option<u32>,
 }
 
 fn default_listen() -> String {
@@ -324,6 +331,12 @@ impl RawConfig {
                     "config: tab \"{label}\" has more than 25 accounts"
                 )));
             }
+            let refresh_hours = tab.refresh_hours.unwrap_or(DEFAULT_REFRESH_HOURS);
+            if !valid_refresh_hours(refresh_hours) {
+                return Err(ConfigError::new(format!(
+                    "config: tab \"{label}\" refresh_hours must divide 24 (1, 2, 3, 4, 6, 8, 12 or 24)"
+                )));
+            }
             let mut id = slug(label);
             if id.is_empty() {
                 id = format!("tab-{}", index + 1);
@@ -351,6 +364,7 @@ impl RawConfig {
                 id,
                 label: label.to_string(),
                 accounts,
+                refresh_hours,
             });
         }
         if accounts_total.len() > 100 {
@@ -679,6 +693,8 @@ mod tests {
             .as_deref()
             .unwrap()
             .starts_with("Rights in posts"));
+        assert_eq!(config.tabs[0].refresh_hours, 6);
+        assert!(config.tabs[1..].iter().all(|tab| tab.refresh_hours == 24));
         assert_eq!(config.data_dir, "data");
         assert_eq!(config.posts_per_tab, 20);
         assert_eq!(config.max_image_bytes, 8_000_000);
@@ -779,6 +795,9 @@ mod tests {
             "nope: true\ntabs:\n  - label: A\n    accounts: [abc]\n",
             "x_bearer_token: \"has space\"\ntabs:\n  - label: A\n    accounts: [abc]\n",
             "listen: \"127.0.0.1:9\"\n",
+            "tabs:\n  - label: A\n    refresh_hours: 0\n    accounts: [abc]\n",
+            "tabs:\n  - label: A\n    refresh_hours: 5\n    accounts: [abc]\n",
+            "tabs:\n  - label: A\n    refresh_hours: 48\n    accounts: [abc]\n",
         ];
         for case in cases {
             assert!(Config::from_yaml(case).is_err(), "{case}");

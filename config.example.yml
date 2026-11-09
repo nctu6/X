@@ -37,8 +37,10 @@ api_base: "https://api.x.com"
 data_dir: "data"
 
 # Slot boundaries use this IANA time zone.
-# Each local day (00:00–24:00) is one slot. Each account is fetched at most
-# once per slot, and only when its tab is opened.
+# By default each local day (00:00–24:00) is one slot. A tab may set
+# refresh_hours (1, 2, 3, 4, 6, 8, 12 or 24) for shorter slots; 6 gives
+# 00–06, 06–12, 12–18 and 18–24. Each account is fetched at most once per
+# slot of the tab being opened, and only when that tab is opened.
 timezone: "Asia/Taipei"
 
 # Text shown after displayed times, e.g. "2026-10-09 10:46 Taiwan".
@@ -47,6 +49,7 @@ timezone_label: "Taiwan"
 
 tabs:
   - label: News
+    refresh_hours: 6   # optional; default 24
     accounts:
       - BBCWorld
       - Reuters
