@@ -70,6 +70,6 @@ footer:
     - { label: "About", url: "https://0x6.ai/about.html" }
     - { label: "Terms", url: "https://0x6.ai/terms.html" }
     - { label: "Privacy", url: "https://0x6.ai/privacy.html" }
-    - { label: "0x6@mail.grokbot.com", url: "mailto:0x6@mail.grokbot.com" }
+    - { label: "support@0x6.ai", url: "mailto:support@0x6.ai" }
     - { label: "☕ Buy me a coffee", url: "https://0x6.ai/donate/" }
   note: "Rights in posts, images, and account names belong to their authors and X, and do not reflect the views of 0x6.ai. Content is updated with a delay, so rely on the original post on X."

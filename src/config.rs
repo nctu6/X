@@ -686,7 +686,7 @@ mod tests {
         assert_eq!(footer.text.as_deref(), Some("Copyright © 0x6.ai"));
         assert_eq!(footer.url, None);
         assert_eq!(footer.links.len(), 5);
-        assert_eq!(footer.links[3].url, "mailto:0x6@mail.grokbot.com");
+        assert_eq!(footer.links[3].url, "mailto:support@0x6.ai");
         assert_eq!(footer.links[4].label, "☕ Buy me a coffee");
         assert!(footer
             .note
@@ -893,7 +893,7 @@ mod tests {
         for url in [
             "mailto:a@b.c",
             "mailto:a@b.cc",
-            "mailto:0x6@mail.grokbot.com",
+            "mailto:support@0x6.ai",
             "mailto:first.last+tag@sub-1.example.org",
         ] {
             let config = Config::from_yaml(&format!(
