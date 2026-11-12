@@ -735,7 +735,7 @@ mod tests {
     #[test]
     fn footer_plain_text_credits_match_site_layout() {
         let config = Config::from_yaml(
-            "footer:\n  text: \"Copyright © 0x6.ai\"\n  links:\n    - { label: About, url: \"https://0x6.ai/about.html\" }\n    - { label: \"0x6@mail.grokbot.com\", url: \"mailto:0x6@mail.grokbot.com\" }\ntabs:\n  - label: News\n    accounts: [example]\n",
+            "footer:\n  text: \"Copyright © 0x6.ai\"\n  links:\n    - { label: About, url: \"https://0x6.ai/about.html\" }\n    - { label: \"support@0x6.ai\", url: \"mailto:support@0x6.ai\" }\ntabs:\n  - label: News\n    accounts: [example]\n",
         )
         .unwrap();
         let view = TabView {
@@ -747,7 +747,7 @@ mod tests {
         };
         let html = String::from_utf8(render_page(&config, &view).raw.to_vec()).unwrap();
         assert!(html.contains(
-            "<footer><p class=\"credits\"><span>Copyright © 0x6.ai</span> <span class=\"footer-links\"><a href=\"https://0x6.ai/about.html\" target=\"_blank\" rel=\"noopener noreferrer\">About</a> · <a href=\"mailto:0x6@mail.grokbot.com\">0x6@mail.grokbot.com</a></span></p></footer>"
+            "<footer><p class=\"credits\"><span>Copyright © 0x6.ai</span> <span class=\"footer-links\"><a href=\"https://0x6.ai/about.html\" target=\"_blank\" rel=\"noopener noreferrer\">About</a> · <a href=\"mailto:support@0x6.ai\">support@0x6.ai</a></span></p></footer>"
         ));
         assert!(!html.contains("health"));
     }
